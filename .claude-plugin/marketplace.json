@@ -1,0 +1,17 @@
+{
+  "name": "hs-ai-projects",
+  "owner": {
+    "name": "hs-ai-projects"
+  },
+  "plugins": [
+    {
+      "name": "pipelit",
+      "version": "0.1.0",
+      "source": {
+        "source": "github",
+        "repo": "hs-ai-projects/pipelit"
+      },
+      "description": "AI 研发流程自动化插件 — 飞书任务、版本发布、changelog 全链路打通"
+    }
+  ]
+}

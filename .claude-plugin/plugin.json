@@ -1,0 +1,12 @@
+{
+  "name": "pipelit",
+  "version": "0.1.0",
+  "description": "AI 研发流程自动化插件 — 飞书任务、版本发布、changelog 全链路打通",
+  "author": {
+    "name": "hs-ai-projects",
+    "url": "https://github.com/hs-ai-projects"
+  },
+  "repository": "https://github.com/hs-ai-projects/pipelit",
+  "license": "MIT",
+  "keywords": ["feishu", "release", "changelog", "claude-code-plugin", "devops"]
+}
