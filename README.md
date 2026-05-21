@@ -10,7 +10,7 @@
 ## 安装
 
 ```bash
-/plugin marketplace add <your-username>/pipelit
+/plugin marketplace add hs-ai-projects/pipelit
 /plugin install pipelit
 ```
 
