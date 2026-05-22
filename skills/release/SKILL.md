@@ -9,13 +9,11 @@ description: >
 
 **整个流程只需确认一次。**
 
-precheck + dry-run 自动收集所有信息 → 展示预览 → 用户确认版本号 → 全自动执行。
+precheck + dry-run 自动收集所有信息 → 展示预览 → 用户确认版本号 → **Phase 3 全自动执行，不再弹出任何确认，包括 push**。
 
 ---
 
 ## Phase 0：读取发版配置（首次自动引导）
-
-检查 `.claude/release-config.json`：
 
 ```bash
 cat .claude/release-config.json 2>/dev/null || echo "NOT_FOUND"
@@ -23,7 +21,7 @@ cat .claude/release-config.json 2>/dev/null || echo "NOT_FOUND"
 
 ### 若已存在：直接读取，进入 Phase 1。
 
-### 若不存在：通过 AskUserQuestion 询问 3 个问题，自动生成配置
+### 若不存在：通过 AskUserQuestion 询问以下问题
 
 **问题 1：仓库数量**
 ```
@@ -45,21 +43,21 @@ cat .claude/release-config.json 2>/dev/null || echo "NOT_FOUND"
 发版后是否生成 changelog？面向谁？
   ● 是，面向业务/运营同事（默认）
   ○ 是，面向技术团队
-  ○ 是，自定义描述
   ○ 否，不生成
 ```
 
-选"自定义描述"时追加询问：读者是谁（如"电商运营人员"）。
+**问题 4：飞书 Wiki 链接（可选）**
+```
+是否有飞书 Wiki 页面用于存放版本说明？（用于更新概述末尾附链接）
+  ○ 有，我来输入链接
+  ● 暂无，跳过
+```
 
-映射规则：
-- 选项 1 → `"enabled": true, "audience": "business"`
-- 选项 2 → `"enabled": true, "audience": "technical"`
-- 选项 3 → `"enabled": true, "audience": "<用户填写>"`
-- 选项 4 → `"enabled": false`
+选"有，我来输入链接"时追加输入框让用户填写完整 URL。
 
 根据回答生成并保存 `.claude/release-config.json`。
 
-### 配置文件完整格式
+### 配置文件格式
 
 ```json
 {
@@ -74,7 +72,7 @@ cat .claude/release-config.json 2>/dev/null || echo "NOT_FOUND"
       "remote": "origin",
       "versionFile": "package.json",
       "versionUpdater": "npm",
-      "precheck": ["pnpm lint", "pnpm build"]
+      "precheck": []
     },
     {
       "label": "backend",
@@ -83,7 +81,7 @@ cat .claude/release-config.json 2>/dev/null || echo "NOT_FOUND"
       "remote": "origin",
       "versionFile": "pyproject.toml",
       "versionUpdater": "poetry",
-      "precheck": ["pytest"]
+      "precheck": []
     }
   ],
   "changelog": {
@@ -91,255 +89,281 @@ cat .claude/release-config.json 2>/dev/null || echo "NOT_FOUND"
     "outputDir": "changelog-workspace",
     "audience": "business"
   },
-  "notify": {
-    "enabled": false
-  }
+  "feishuWikiUrl": "https://hesung2020.feishu.cn/wiki/xxx"
 }
 ```
 
-**字段说明：**
+**`feishuWikiUrl`**（可选）：填写后，更新概述末尾自动附上该链接。留空或不填则省略。
 
-| 字段 | 必填 | 默认值 | 说明 |
-|------|------|--------|------|
-| `projectName` | 否 | 目录名 | 项目名，用于 manifest 和通知 |
-| `versionStrategy` | 否 | `"unified"` | `unified`：多仓库打同一 tag；`independent`：各自独立 |
-| `defaultMode` | 否 | `"safe"` | `safe`：precheck 失败阻断；`force`：跳过 precheck |
-| `repos[].label` | 是 | — | 仓库别名，用于日志和 manifest |
-| `repos[].path` | 是 | — | 仓库本地路径（绝对或相对路径均可） |
-| `repos[].releaseBranch` | 否 | `"master"` | 发版必须在此分支上 |
-| `repos[].remote` | 否 | `"origin"` | 远端名称 |
-| `repos[].versionFile` | 是 | — | `package.json` / `pyproject.toml` |
-| `repos[].versionUpdater` | 否 | 自动检测 | `npm`/`pnpm`/`poetry`/`manual` |
-| `repos[].precheck` | 否 | `[]` | 发版前必须通过的命令列表 |
-| `changelog.enabled` | 否 | `true` | 是否生成 changelog |
-| `changelog.outputDir` | 否 | `"changelog-workspace"` | changelog 输出目录 |
-| `changelog.audience` | 否 | `"business"` | 读者画像：`business`（业务/运营）/ `technical`（技术团队）/ 任意字符串描述 |
-| `notify.enabled` | 否 | `false` | 是否生成飞书群通知文案 |
-
-> **安全提醒：** `.claude/release-config.json` 包含本地路径，必须加入 `.gitignore`，不要提交到 Git。
+> **安全提醒：** `.claude/release-config.json` 含本地路径，必须加入 `.gitignore`。
 
 ---
 
 ## Phase 1：Precheck（全自动，无需干预）
 
-对 config 中**每个仓库**依次执行以下检查，**任意一条失败则阻断**，统一展示所有问题后让用户处理。
+对 config 中**每个仓库**依次执行，**任意一条失败则阻断**，统一展示所有问题后让用户处理。
 
-### 1.1 同步远端
+### 1.1 同步远端 + 检查分支/工作区/同步状态
 
-```bash
-git -C "<repo_path>" fetch origin --tags --prune
-```
-
-### 1.2 检查分支
+将以下命令**合并为一次 bash 调用**以减少确认次数：
 
 ```bash
-git -C "<repo_path>" branch --show-current
-```
-
-必须等于 `releaseBranch`（默认 `master`），否则阻断：
-```
-❌ [frontend] 当前分支为 feature/xxx，发版必须在 master 分支
-```
-
-### 1.3 检查工作区
-
-```bash
-git -C "<repo_path>" status --porcelain
-```
-
-有未提交变更则阻断：
-```
-❌ [frontend] 工作区有未提交变更，请先 commit 或 stash
-```
-
-### 1.4 检查本地与远端同步状态
-
-```bash
+git -C "<repo_path>" fetch origin --tags --prune && \
+git -C "<repo_path>" branch --show-current && \
+git -C "<repo_path>" status --porcelain && \
 git -C "<repo_path>" rev-list --left-right --count origin/<releaseBranch>...HEAD
 ```
 
-输出格式为 `<behind>\t<ahead>`：
+检查项（全部通过才能继续）：
+- 当前分支必须等于 `releaseBranch`
+- 工作区必须干净（`status --porcelain` 无输出）
+- `behind > 0` → 阻断，提示 `git pull`
+- `ahead > 0` → 阻断，有未推送的本地 commit
+- 分叉（`behind > 0 && ahead > 0`）→ 阻断，需人工处理
 
-| 情况 | 处理 |
-|------|------|
-| `behind > 0` | ❌ 阻断，提示 `git -C "<path>" pull` |
-| `ahead > 0` | ❌ 默认阻断，提示本地有未推送的 commit |
-| `behind > 0 && ahead > 0` | ❌ 阻断，分支已分叉，需人工处理 |
-| `0\t0` | ✅ 通过 |
-
-### 1.5 检查版本号文件是否存在
+### 1.2 检查版本号文件
 
 ```bash
 ls "<repo_path>/<versionFile>"
 ```
 
-不存在则阻断：
-```
-❌ [backend] 未找到版本文件 pyproject.toml
-```
-
-### 1.6 检查远端是否已存在同名 tag（提前获取目标版本号后执行）
+### 1.3 收集变更信息 + 检测 tag 格式
 
 ```bash
-git -C "<repo_path>" ls-remote --tags origin v<version>
+git -C "<repo_path>" tag --sort=-creatordate | head -5
 ```
 
-有输出则阻断：
-```
-❌ [frontend] 远端已存在 tag v1.3.0，请确认版本号是否正确
+**Tag 格式检测（关键）：**
+
+读取最新 tag 后检查是否以 `v` 开头：
+- 最新 tag = `v1.2.3` → `TAG_PREFIX="v"`
+- 最新 tag = `1.2.3` → `TAG_PREFIX=""`（无前缀）
+- 无 tag → `TAG_PREFIX="v"`（默认，首次发版用 `v1.0.0`）
+
+后续所有 tag 名称、manifest range 均使用检测到的格式，**不强制添加或删除 `v`**。
+
+```bash
+git -C "<repo_path>" log <last_tag>..HEAD --oneline --no-merges
 ```
 
-### 1.7 运行 precheck 命令
+**版本号建议（优先级从高到低）：**
 
-对每个 `repos[].precheck` 命令依次执行：
+1. commit message 或 body 含 `BREAKING CHANGE` → **major**（主版本 +1，次版本和修订号归零）
+2. 任意 commit 含 `feat:` → **minor**（次版本 +1，修订号归零）
+3. 仅含 `fix:` / `perf:` / `chore:` → **patch**（修订号 +1）
+4. 无 conventional commit 格式 → **patch**（默认）
+
+多仓库取所有仓库 commit 中最高优先级。`versionStrategy: unified` 时前后端打同一版本号。
+
+新版本号 = `TAG_PREFIX` + 递增后的 `X.Y.Z`（如 `v1.3.0` 或 `1.3.0`）。
+
+### 1.4 检查远端 tag 是否已存在
+
+```bash
+git -C "<repo_path>" ls-remote --tags origin "<proposed_tag>"
+```
+
+有输出则阻断：`❌ [frontend] 远端已存在 tag <tag>，请确认版本号是否正确`
+
+### 1.5 运行 precheck 命令
+
+对每个 `repos[].precheck` 命令依次执行（若列表为空则跳过）：
 
 ```bash
 cd "<repo_path>" && <precheck_command>
 ```
 
-失败时：
-- `defaultMode: "safe"` → 阻断，展示失败输出
-- 通过 AskUserQuestion 询问：
-  ```
-  precheck 失败：pnpm build
-  
-  是否强制继续？
-    ○ 是，忽略 precheck 风险继续发版
-    ● 否，先修复再重试
-  ```
-
-### 1.8 收集变更信息
-
-```bash
-# 获取最新 tag（按时间排序）
-git -C "<repo_path>" describe --tags --abbrev=0 2>/dev/null || echo "NO_TAG"
-
-# 获取自上次 tag 以来的 commits
-git -C "<repo_path>" log <last_tag>..HEAD --oneline --no-merges
-```
-
-**版本号建议（基于所有仓库 commit 分析）：**
-- 含 `feat:` → minor（次版本 +1）
-- 全是 `fix:` / `perf:` → patch（修订号 +1）
-- 含 `BREAKING CHANGE` → major
-- 多仓库取最高版本号为基准，`versionStrategy: unified` 时统一递增
-- 首次发版（无 tag）→ 建议 `v1.0.0`
+失败时通过 AskUserQuestion 询问是否强制继续（默认否）。
 
 ---
 
 ## Phase 2：预览确认（唯一的人工交互）
 
-展示完整发版预览，等待用户确认版本号：
+展示完整预览，**通过 AskUserQuestion 等待用户确认版本号**：
 
 ```
 ━━━ 发版预览 ━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 Precheck: ✅ 全部通过
 
-仓库: frontend (.)       当前: v1.2.3
-仓库: backend (../ads)   当前: v1.2.3
+仓库: frontend (.)       当前: <tag>
+仓库: backend (../ads)   当前: <tag>
 
-建议版本: v1.3.0（含新功能，minor 递增）
+建议版本: <new_tag>（含新功能，minor 递增）
 
-变更内容（20 commits）:
+变更内容（N commits）:
   [frontend] 12 commits
     feat: 新增广告创意多选
     feat: SBV 视频广告支持
     fix: 修复数据统计错误
-    ...
   [backend] 8 commits
     feat: 新增创意批量接口
     fix: 修复报表查询超时
-    ...
 
-将执行:
+将执行（确认后全自动，不再打断）:
   ✓ 更新版本号文件
-  ✓ git commit + tag v1.3.0
-  ✓ git push（前端 + 后端）
-  ✓ 生成 release-manifest.json
-  ✓ 生成 changelog
+  ✓ git commit + tag
+  ✓ git push（前端 + 后端，无需再次确认）
+  ✓ 生成 changelog（HTML + Markdown）
+  ✓ 生成版本更新概述
 
-[版本号] v1.3.0   ← 直接回车确认，或输入自定义版本号
+[版本号] <new_tag>   ← 直接回车确认，或输入自定义版本号
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 ```
 
 ---
 
-## Phase 3：自动执行（确认后全自动，不再中断）
+## Phase 3：自动执行
+
+> **⚠️ 重要：Phase 2 用户确认即视为对整个 Phase 3 的一次性授权。**
+> **所有 bash 命令直接执行，不再询问用户确认，包括 git push。**
+> **将多步 git 命令合并为单次 bash 调用，减少权限提示次数。**
 
 ### 3.1 更新版本号文件
 
-对每个仓库更新版本号（不带 v 前缀）：
-- `package.json`：更新 `"version"` 字段
+- `package.json`：更新 `"version"` 字段（不带前缀，只写 `X.Y.Z`）
 - `pyproject.toml`：更新 `version = "..."` 字段
 
 ### 3.2 Commit + Tag
 
-```bash
-git -C "<repo_path>" add <versionFile>
-git -C "<repo_path>" commit -m "chore: release v<version>"
-git -C "<repo_path>" tag -a v<version> -m "<从变更中提取的主题>"
-```
-
-### 3.3 Push
+**合并为单次调用：**
 
 ```bash
-git -C "<repo_path>" push origin <releaseBranch>
-git -C "<repo_path>" push origin v<version>
+cd "<repo_path>" && \
+  git add <versionFile> && \
+  git commit -m "chore: release <new_tag>" && \
+  git tag -a <new_tag> -m "<从变更中提取的主题关键词，如：SBV视频广告、广告创意多选>"
 ```
+
+### 3.3 Push（已授权，直接执行，不再确认）
+
+**合并为单次调用：**
+
+```bash
+cd "<repo_path>" && git push origin <releaseBranch> && git push origin <new_tag>
+```
+
+多仓库依次执行。
 
 ### 3.4 生成 release-manifest.json
 
-push 成功后，在 `changelog.outputDir` 目录下写入 `release-manifest.json`：
+push 成功后写入 `<changelog.outputDir>/release-manifest.json`：
 
 ```json
 {
-  "version": "v1.3.0",
-  "date": "2026-05-19",
+  "version": "<new_tag>",
+  "date": "YYYY-MM-DD",
   "status": "success",
   "repos": [
     {
       "label": "frontend",
       "path": ".",
       "branch": "master",
-      "prevTag": "v1.2.3",
-      "currentTag": "v1.3.0",
-      "range": "v1.2.3..v1.3.0",
+      "prevTag": "<prev_tag>",
+      "currentTag": "<new_tag>",
+      "range": "<prev_tag>..<new_tag>",
       "commitCount": 12,
       "versionFile": "package.json"
-    },
-    {
-      "label": "backend",
-      "path": "../ads",
-      "branch": "master",
-      "prevTag": "v1.2.3",
-      "currentTag": "v1.3.0",
-      "range": "v1.2.3..v1.3.0",
-      "commitCount": 8,
-      "versionFile": "pyproject.toml"
     }
   ]
 }
 ```
 
-changelog skill 读取此文件获取每个仓库的 commit range，无需自行推断 tag。
+> **注意：`prevTag`、`currentTag`、`range` 全部使用实际 tag 名称（保持检测到的 `v` 格式），不强制添加或删除前缀。**
 
-### 3.5 Changelog 提示（若 `changelog.enabled: true`）
+### 3.5 生成 Changelog（若 `changelog.enabled: true`）
 
-manifest 已写入，在完成总结末尾追加：
+**直接内联生成，无需用户再运行 `/changelog`。**
 
-> 📝 运行 `/changelog` 即可生成更新文档（manifest 已就绪，将自动读取）。
+读取 manifest 中各仓库的 `range`，依次执行：
 
-### 3.6 生成发布通知（若 `notify.enabled: true`）
-
-从 changelog 提炼飞书群通知：
-
+```bash
+git -C "<repo_path>" log <range> --oneline --no-merges
+git -C "<repo_path>" diff <range> --stat
+git -C "<repo_path>" log <range> --format="%H %s" --no-merges
 ```
-**v<version> 更新概述（YYYY-MM-DD）**
-新功能A、新功能B
-优化A、优化B
-问题A 已修复
+
+**过滤：** 排除 `chore: release` 格式的 commit。
+
+**写作规则（`audience: "business"` 下）：**
+
+- 每条：**标题行**（标签 + 加粗名称）+ **下一行**（描述，1 句话，勿加冒号）
+- 标题 ≤ 10 字，描述 1 句话 ≤ 30 字，不解释技术细节
+- 过滤：重构、改名、依赖升级、配置、lint、`chore:`、`ci:`、`build:` 类
+- 无内容的分类整体省略
+
+**HTML 模板（飞书兼容，必须按此结构输出）：**
+
+```html
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <title><new_tag>（YYYY-MM-DD）</title>
+</head>
+<body style="font-family: -apple-system, BlinkMacSystemFont, 'PingFang SC', 'Microsoft YaHei', sans-serif; max-width: 800px; margin: 40px auto; padding: 0 20px; color: #333; line-height: 1.8;">
+
+  <h3 style="font-size: 24px; border-bottom: 2px solid #1677ff; padding-bottom: 8px;"><new_tag>（YYYY-MM-DD）</h3>
+
+  <!-- 新功能示例 -->
+  <p style="margin-top: 28px; margin-bottom: 4px;">
+    <span style="background: #e6f7ff; color: #1677ff; padding: 2px 8px; border-radius: 4px; font-size: 12px;">新功能</span>
+    <b> 功能名称</b>
+  </p>
+  <p style="color: #555; margin-top: 0;">描述，不超过 30 字。</p>
+  <p style="color: #aaa; font-size: 13px; margin-top: 0;">[图片]</p>
+
+  <!-- 修复示例（有飞书任务链接时追加 a 标签） -->
+  <p style="margin-top: 20px; margin-bottom: 4px;">
+    <span style="background: #fff2e8; color: #fa8c16; padding: 2px 8px; border-radius: 4px; font-size: 12px;">修复</span>
+    <b> 修复内容</b>
+    <a href="<feishu_task_url>" target="_blank" style="margin-left: 8px; background: #e6f7ff; color: #1677ff; padding: 2px 8px; border-radius: 4px; font-size: 12px; text-decoration: none; vertical-align: middle;">🔗 飞书任务</a>
+  </p>
+  <p style="color: #555; margin-top: 0;">描述。</p>
+
+  <!-- 优化示例 -->
+  <p style="margin-top: 20px; margin-bottom: 4px;">
+    <span style="background: #f6ffed; color: #52c41a; padding: 2px 8px; border-radius: 4px; font-size: 12px;">优化</span>
+    <b> 优化内容</b>
+  </p>
+  <p style="color: #555; margin-top: 0;">描述。</p>
+
+</body>
+</html>
 ```
+
+**飞书兼容强制要求：**
+1. 所有样式内联，禁用 `<style>` 块和 class
+2. 用 `<p>` + `<b>`，不用 `<div>`
+3. 标签用 `<span>`，样式内联
+4. 描述段 `<p>` 设 `margin-top: 0` 避免多余空行
+5. `[图片]` 占位只加在有界面变化的功能点，纯后端不加
+
+保存到：
+- `<outputDir>/changelog-<new_tag>.html`
+- `<outputDir>/changelog-<new_tag>.md`
+
+### 3.6 生成版本更新概述
+
+从 3.5 生成的内容中提炼。**此部分在代码块外单独输出**，标题渲染为加粗文字。
+
+格式：每条独立一行，emoji 区分类型，描述从用户视角写价值而非功能名。
+
+**<new_tag> 版本更新概述（YYYY-MM-DD）**
+✨ 描述新功能对用户的实际价值（原来要怎么做，现在怎么了）
+⚡ 描述优化带来的体验改善
+🔧 描述修复了什么问题
+<feishuWikiUrl>（若 config 中配置了则附上，否则省略此行）
+
+**写作指令：**
+- 从 diff 和 commit 中找"用户原来要做什么操作 / 遇到什么问题"，而不是从 commit message 里抄功能名
+- 每条 1 句话，≤ 20 字，口语化，让非技术同事秒懂
+- ✨ 新功能：说清楚"能做什么了"或"不用再……了"
+- ⚡ 优化：说清楚"更快/更稳/更少操作了"
+- 🔧 修复：说清楚"之前……的问题修好了"
+- 同类多条可合并为一行（用顿号），也可拆开（视内容重要程度）
+- 过滤技术变更（重构、依赖升级等用户无感的不写）
+- 无该类别则省略整行
 
 ---
 
@@ -350,103 +374,70 @@ manifest 已写入，在完成总结末尾追加：
 | 状态 | 含义 |
 |------|------|
 | `success` | 全部成功 |
-| `failed` | 流程失败，未产生任何远端影响 |
-| `partial_release` | 部分仓库或部分动作已推送，部分失败 |
-| `cancelled` | 用户中途取消 |
+| `failed` | 流程失败，无远端影响 |
+| `partial_release` | 部分已推送，部分失败 |
+| `cancelled` | 用户取消 |
 
-### 失败场景与处理
+### partial_release 示例
 
-**更新版本文件失败：**
-```
-❌ 更新 package.json 失败
-状态: failed（本地无变更，可安全重试）
-```
-
-**precheck 失败：**
-```
-❌ pnpm build 失败（退出码 1）
-状态: failed
-选择：修复后重试 / 强制继续（风险自担）
-```
-
-**前端 push 成功，后端 push 失败（partial_release）：**
 ```
 ⚠️ partial_release
 
-frontend ✅ 已推送 v1.3.0
+frontend ✅ 已推送 <new_tag>
 backend  ❌ push 失败
-
-本地状态:
-  frontend commit: ✅ 已创建  tag: ✅ 已创建  远端: ✅ 已推送
-  backend  commit: ✅ 已创建  tag: ✅ 已创建  远端: ❌ 未推送
 
 建议手动执行（确认后可由 Claude 执行）:
   git -C "<backend_path>" push origin master
-  git -C "<backend_path>" push origin v1.3.0
-
-如需回滚 frontend（谨慎）:
-  git -C "<frontend_path>" push origin :refs/tags/v1.3.0
-  git -C "<frontend_path>" reset --soft HEAD~1
-  git -C "<frontend_path>" push origin master --force-with-lease
+  git -C "<backend_path>" push origin <new_tag>
 ```
 
-**commit push 成功，tag push 失败：**
-```
-⚠️ partial_release
-
-commit ✅ 已推送
-tag    ❌ push 失败
-
-手动补推:
-  git -C "<repo_path>" push origin v1.3.0
-```
-
-**其他场景回滚命令（用户明确确认后才执行）：**
-
-```bash
-# 删除本地 tag
-git -C "<repo_path>" tag -d v<version>
-
-# 删除远端 tag
-git -C "<repo_path>" push origin :refs/tags/v<version>
-
-# 撤销本地 release commit
-git -C "<repo_path>" reset --soft HEAD~1
-
-# 恢复版本文件
-git -C "<repo_path>" checkout -- package.json
-git -C "<repo_path>" checkout -- pyproject.toml
-```
-
-**默认不自动执行回滚**，仅输出命令。用户明确说"执行回滚"时才代为运行。
+**默认不自动回滚**，仅输出命令。用户明确说"执行回滚"时才代为运行。
 
 ---
 
 ## 完成总结
 
+先输出发版状态（代码块）：
+
 ```
 ✅ 发版完成！
 
-版本: v<version>
+版本: <new_tag>
 日期: YYYY-MM-DD
 
 仓库状态:
   frontend ✅  backend ✅
 
-Manifest: changelog-workspace/release-manifest.json
-
-📝 运行 `/changelog` 即可生成更新文档（manifest 已就绪）
-
-发布通知:
-────────────────────
-<通知文本>（若已生成）
-────────────────────
+Changelog: <outputDir>/changelog-<new_tag>.html
+（浏览器打开 → Ctrl+A → Ctrl+C → 飞书文档 Ctrl+V）
 ```
+
+然后在代码块外，另起行输出版本更新概述（标题渲染为加粗，可直接复制到飞书群）：
+
+---
+**<new_tag> 版本更新概述（YYYY-MM-DD）**
+新功能A、新功能B
+优化A、优化B
+问题A、问题B 已修复
+<feishuWikiUrl>（若配置了则附上）
+---
+
+若 config 中 `feishuWikiUrl` 为空，完成总结输出后，用 AskUserQuestion 询问：
+
+```
+概述末尾是否附上飞书 Wiki 链接？
+  ● 是，我来输入链接
+  ○ 不需要
+```
+
+选"是"时：追加输入框让用户填写 URL，填写后自动写入 `.claude/release-config.json` 的 `feishuWikiUrl` 字段，并补充输出含链接的完整概述。
+选"不需要"时：不再询问，流程结束。
 
 ---
 
 ## 注意事项
 
-- 整个流程只有 Phase 2 需要用户交互，其他全自动
+- 整个流程只有 Phase 2 需要用户交互，Phase 3 全自动，包括 push
+- 将多个 git 命令合并为单次 bash 调用（用 `&&` 连接），减少权限提示次数
 - partial_release 时不自动回滚，只输出恢复命令
 - `.claude/release-config.json` 含本地路径，必须加入 `.gitignore`
