@@ -25,6 +25,7 @@
 | `feishu-commit` | `/feishu-commit <task_id>` | commit 并自动注入飞书任务链接 |
 | `release` | "发版"、"打 tag"、"release" | 版本发布（precheck + dry-run + 一次确认） |
 | `changelog` | "changelog"、"更新日志" | 生成版本更新文档（Markdown / 飞书 HTML） |
+| `guance` | `/guance` | 观测云 ads-backend 错误日志分析（按状态码/接口/错误信息三维聚合） |
 
 ## 任务分级
 

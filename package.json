@@ -1,6 +1,6 @@
 {
   "name": "pipelit",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "AI 研发流程自动化插件集 — 飞书任务、版本发布、代码提交全链路打通",
   "keywords": ["feishu", "release", "bugfix", "claude-code-plugin", "devops"],
   "author": "otsan",
