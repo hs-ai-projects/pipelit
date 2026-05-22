@@ -1,7 +1,8 @@
 ---
-name: guance-log-analysis
+name: guance
 description: >
-  观测云日志分析。触发词："观测云"、"查日志"、"查报错"、"接口报错"、"分析错误"、"guance logs"。
+  观测云日志分析。手动触发：/guance-log-analysis。
+  语义触发词："观测云"、"查日志"、"查报错"、"接口报错"、"分析错误"、"guance logs"。
   拉取 ads-backend 指定时段的错误日志，按状态码/接口路径/错误信息三维聚合，输出分析报告。
 ---
 
