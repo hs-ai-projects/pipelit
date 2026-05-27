@@ -34,15 +34,18 @@ SCRIPT_DIR = pathlib.Path(__file__).parent
 if str(SCRIPT_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPT_DIR))
 
-# 复用 webhook 模块的工具函数（路径常量、配置读取、事件过滤）
-from feishu_bot_webhook import (
-    CACHE_DIR,
-    read_config,
-    get_bot_cfg,
-    is_assigned_to_me,
-)
+# 配置读取：用 feishu_api 的路径（~/.claude/pipelit/config.json），跟 save_config / save_user 对齐
+# 业务过滤：复用 feishu_bot_webhook 的事件判断逻辑
+from feishu_api import read_config, USER_CONFIG_DIR
+from feishu_bot_webhook import is_assigned_to_me
 
-LOG_DIR = CACHE_DIR / "webhook_logs"
+
+def get_bot_cfg() -> dict:
+    cfg = read_config()
+    return cfg.get("bot", {}) if cfg else {}
+
+
+LOG_DIR = USER_CONFIG_DIR / "webhook_logs"
 
 
 def log(msg: str) -> None:
@@ -92,7 +95,7 @@ def _process_task_event(event_type: str, body: dict) -> None:
 
         cfg            = get_bot_cfg()
         trigger_events = cfg.get("trigger_events", ["task_assigned", "task_created"])
-        my_user_id     = cfg.get("user_id") or read_config().get("user_id", "")
+        my_user_id     = cfg.get("user_id") or (read_config() or {}).get("user_id", "")
 
         if "task_created" in event_type:
             if "task_created" not in trigger_events:
@@ -173,7 +176,7 @@ def on_card_action(data) -> "P2CardActionTriggerResponse":
 # ── 启动 ────────────────────────────────────────────────────────────────────
 
 def cmd_serve() -> None:
-    cfg        = read_config()
+    cfg        = read_config() or {}
     app_id     = cfg.get("app_id", "")
     app_secret = cfg.get("app_secret", "")
     bot_cfg    = cfg.get("bot", {})
