@@ -16,12 +16,12 @@ precheck + dry-run 自动收集所有信息 → 展示预览 → 用户确认版
 ## Phase 0：读取发版配置（首次自动引导）
 
 ```bash
-cat .claude/release-config.json 2>/dev/null || echo "NOT_FOUND"
+PYTHONIOENCODING=utf-8 python3 "${CLAUDE_PLUGIN_ROOT}/scripts/feishu_api.py" get_release_config
 ```
 
-### 若已存在：直接读取，进入 Phase 1。
+### 若 `configured: true`：读取 `release` 字段，进入 Phase 1。
 
-### 若不存在：通过 AskUserQuestion 询问以下问题
+### 若 `configured: false`：通过 AskUserQuestion 询问以下问题
 
 **问题 1：仓库数量**
 ```
@@ -55,47 +55,69 @@ cat .claude/release-config.json 2>/dev/null || echo "NOT_FOUND"
 
 选"有，我来输入链接"时追加输入框让用户填写完整 URL。
 
-根据回答生成并保存 `.claude/release-config.json`。
+**问题 5：飞书群通知（可选）**
+```
+发版后是否自动发送更新概述到飞书群？
+  ○ 是，我来输入群 chat_id（oc_xxx 开头）
+  ● 暂不需要
+```
+
+选"是"时追加输入框让用户填写群 chat_id（以 `oc_` 开头）。
+
+根据回答组装 JSON 并保存：
+
+```bash
+PYTHONIOENCODING=utf-8 python3 "${CLAUDE_PLUGIN_ROOT}/scripts/feishu_api.py" save_release_config '<release_json>'
+```
 
 ### 配置文件格式
 
+统一存储在 `~/.claude/pipelit/config.json` 的 `release` 字段中（跨工作目录共享）：
+
 ```json
 {
-  "projectName": "my-project",
-  "versionStrategy": "unified",
-  "defaultMode": "safe",
-  "repos": [
-    {
-      "label": "frontend",
-      "path": ".",
-      "releaseBranch": "master",
-      "remote": "origin",
-      "versionFile": "package.json",
-      "versionUpdater": "npm",
-      "precheck": []
+  "app_id": "...",
+  "app_secret": "...",
+  "frontend_path": "...",
+  "backend_path": "...",
+  "release": {
+    "projectName": "my-project",
+    "versionStrategy": "unified",
+    "defaultMode": "safe",
+    "repos": [
+      {
+        "label": "frontend",
+        "path": ".",
+        "releaseBranch": "master",
+        "remote": "origin",
+        "versionFile": "package.json",
+        "versionUpdater": "npm",
+        "precheck": []
+      },
+      {
+        "label": "backend",
+        "path": "../my-api",
+        "releaseBranch": "master",
+        "remote": "origin",
+        "versionFile": "pyproject.toml",
+        "versionUpdater": "poetry",
+        "precheck": []
+      }
+    ],
+    "changelog": {
+      "enabled": true,
+      "outputDir": "changelog-workspace",
+      "audience": "business"
     },
-    {
-      "label": "backend",
-      "path": "../my-api",
-      "releaseBranch": "master",
-      "remote": "origin",
-      "versionFile": "pyproject.toml",
-      "versionUpdater": "poetry",
-      "precheck": []
-    }
-  ],
-  "changelog": {
-    "enabled": true,
-    "outputDir": "changelog-workspace",
-    "audience": "business"
-  },
-  "feishuWikiUrl": "https://hesung2020.feishu.cn/wiki/xxx"
+    "feishuWikiUrl": "https://hesung2020.feishu.cn/wiki/xxx",
+    "chatId": "oc_xxx"
+  }
 }
 ```
 
 **`feishuWikiUrl`**（可选）：填写后，更新概述末尾自动附上该链接。留空或不填则省略。
 
-> **安全提醒：** `.claude/release-config.json` 含本地路径，必须加入 `.gitignore`。
+**`chatId`**（可选）：飞书群 ID（`oc_` 开头）。填写后，发版完成时可一键发送更新概述卡片到该群。
 
 ---
 
@@ -106,6 +128,8 @@ cat .claude/release-config.json 2>/dev/null || echo "NOT_FOUND"
 ### 1.1 同步远端 + 检查分支/工作区/同步状态
 
 将以下命令**合并为一次 bash 调用**以减少确认次数：
+
+> **⚠️ 必须用 `git -C "<path>"` 形式，禁止用 `cd "<path>" && git`，否则会触发额外的权限提示。**
 
 ```bash
 git -C "<repo_path>" fetch origin --tags --prune && \
@@ -144,6 +168,22 @@ git -C "<repo_path>" tag --sort=-creatordate | head -5
 
 ```bash
 git -C "<repo_path>" log <last_tag>..HEAD --oneline --no-merges
+git -C "<repo_path>" log <last_tag>..HEAD --oneline --merges
+```
+
+**Merge commit 处理规则（关键，防止内容错乱）：**
+
+当存在 merge commit（如 `Merge branch 'feature/xxx' into 'master'`）时：
+- **直接取 merge commit 的分支名作为一条 changelog 条目**，不展开该分支内的所有子 commit
+- 分支内部的 `fix:` / `bugfix` commit 视为该 feature 的组成部分，**不单独列为独立修复条目**
+- 只有直接提交到 releaseBranch 上的 `fix:` commit（非 feature 分支内的）才单独列为修复
+
+例：
+```
+Merge branch 'feature/walmart-ads-module' → 归为一条「新功能：沃尔玛广告模块」
+  └─ fix: eslint错误          ← 分支内，忽略
+  └─ fix: 沃尔玛报表数据补全  ← 分支内，忽略
+fix: 今日时间逻辑             ← 直接在 master，单独列出
 ```
 
 **版本号建议（优先级从高到低）：**
@@ -226,21 +266,18 @@ Precheck: ✅ 全部通过
 
 ### 3.2 Commit + Tag
 
-**合并为单次调用：**
+> **⚠️ 必须用 `git -C "<path>"` 形式，禁止用 `cd "<path>" && git`。**
 
 ```bash
-cd "<repo_path>" && \
-  git add <versionFile> && \
-  git commit -m "chore: release <new_tag>" && \
-  git tag -a <new_tag> -m "<从变更中提取的主题关键词，如：SBV视频广告、广告创意多选>"
+git -C "<repo_path>" add <versionFile> && \
+git -C "<repo_path>" commit -m "chore: release <new_tag>" && \
+git -C "<repo_path>" tag -a <new_tag> -m "<从变更中提取的主题关键词>"
 ```
 
 ### 3.3 Push（已授权，直接执行，不再确认）
 
-**合并为单次调用：**
-
 ```bash
-cd "<repo_path>" && git push origin <releaseBranch> && git push origin <new_tag>
+git -C "<repo_path>" push origin <releaseBranch> && git -C "<repo_path>" push origin <new_tag>
 ```
 
 多仓库依次执行。
@@ -279,11 +316,15 @@ push 成功后写入 `<changelog.outputDir>/release-manifest.json`：
 
 ```bash
 git -C "<repo_path>" log <range> --oneline --no-merges
+git -C "<repo_path>" log <range> --oneline --merges
 git -C "<repo_path>" diff <range> --stat
-git -C "<repo_path>" log <range> --format="%H %s" --no-merges
 ```
 
-**过滤：** 排除 `chore: release` 格式的 commit。
+**过滤规则：**
+- 排除 `chore: release` 格式的 commit
+- 排除 `eslint`、`lint`、`revert`、`chore:`、`ci:`、`build:` 类 commit
+- **feature 分支（merge commit）内部的所有 commit 一律忽略，只保留 merge commit 本身**
+- 只有直接 commit 到 releaseBranch 的 `fix:` 才列为独立修复条目
 
 **写作规则（`audience: "business"` 下）：**
 
@@ -430,14 +471,103 @@ Changelog: <outputDir>/changelog-<new_tag>.html
   ○ 不需要
 ```
 
-选"是"时：追加输入框让用户填写 URL，填写后自动写入 `.claude/release-config.json` 的 `feishuWikiUrl` 字段，并补充输出含链接的完整概述。
-选"不需要"时：不再询问，流程结束。
+选"是"时：追加输入框让用户填写 URL，填写后通过 `save_release_config` 更新 `feishuWikiUrl` 字段，并补充输出含链接的完整概述。
+选"不需要"时：继续下一步。
+
+---
+
+## 发送卡片到飞书群
+
+在完成总结和 Wiki 链接处理之后触发。
+
+### 判断 chatId
+
+读取 config 中 `release.chatId`：
+
+**若 chatId 不存在**，用 AskUserQuestion 询问：
+
+```
+是否将版本更新概述发送到飞书群？
+  ● 是，我来输入群 chat_id（oc_xxx 开头）
+  ○ 不发送
+```
+
+选"是"时：追加输入框让用户填写 chat_id，填写后通过 `save_release_config` 更新 `chatId` 字段。
+选"不发送"时：流程结束。
+
+**若 chatId 已存在**，用 AskUserQuestion 询问：
+
+```
+是否将版本更新概述发送到飞书群？
+  ● 发送到已配置的群
+  ○ 更换群（重新输入 chat_id）
+  ○ 不发送
+```
+
+选"发送"时：使用已有 chatId。
+选"更换群"时：追加输入框填写新 chat_id，更新 config。
+选"不发送"时：流程结束。
+
+### 构建并发送卡片
+
+1. 将版本更新概述转为 lark_md 格式的卡片内容 content：
+
+将完成总结中生成的版本更新概述（emoji + 描述列表）转为以下格式：
+
+```
+**✨ 新功能**
+描述A
+描述B
+
+**⚡ 优化**
+描述C
+
+**🐛 修复**
+描述E
+```
+
+> **注意：每条描述直接换行，不加 `•` 圆点前缀。无该类别则省略对应段落。**
+
+2. 调用 `build_release_card` 构建卡片 JSON：
+
+```bash
+PYTHONIOENCODING=utf-8 python3 "${CLAUDE_PLUGIN_ROOT}/scripts/feishu_api.py" build_release_card '<params_json>'
+```
+
+params_json 格式：
+```json
+{
+  "version": "<new_tag>",
+  "date": "YYYY-MM-DD",
+  "content": "<上述 lark_md 内容>",
+  "doc_url": "<feishuWikiUrl 或空>"
+}
+```
+
+3. 调用 `send_card` 发送：
+
+```bash
+PYTHONIOENCODING=utf-8 python3 "${CLAUDE_PLUGIN_ROOT}/scripts/feishu_api.py" send_card '<chat_id>' '<card_json>'
+```
+
+其中 `<card_json>` 为上一步 `build_release_card` 返回的完整 JSON。
+
+4. 发送成功后输出：
+
+```
+✅ 版本更新概述已发送到飞书群
+```
+
+发送失败则输出错误信息，不阻断流程（发版本身已完成）。
 
 ---
 
 ## 注意事项
 
 - 整个流程只有 Phase 2 需要用户交互，Phase 3 全自动，包括 push
+- **所有 git 命令必须用 `git -C "<path>"` 形式，禁止用 `cd "<path>" && git`，否则触发额外权限提示**
 - 将多个 git 命令合并为单次 bash 调用（用 `&&` 连接），减少权限提示次数
 - partial_release 时不自动回滚，只输出恢复命令
-- `.claude/release-config.json` 含本地路径，必须加入 `.gitignore`
+- 所有配置统一存储在 `~/.claude/pipelit/config.json`（用户主目录，跨工作目录共享，凭据不进任何仓库）
+- **send_card 调用：将 params_json 写入临时 Python 脚本文件再执行，避免 Windows shell 引号转义问题**
+- **发送卡片时 receive_id_type 默认 `chat_id`，不要用 `user_id`（需要额外权限）**

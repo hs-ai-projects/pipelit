@@ -27,19 +27,36 @@ import urllib.error
 import pathlib
 from datetime import datetime, timezone, timedelta
 
-PLUGIN_ROOT = pathlib.Path(
-    os.environ.get("CLAUDE_PLUGIN_ROOT", pathlib.Path(__file__).parent.parent)
-)
-USER_CONFIG_DIR = pathlib.Path.home() / ".claude" / "plugins" / "cache" / "pipelit"
+# 用户数据：跨项目/跨工作目录共享，固定在用户主目录
+USER_CONFIG_DIR = pathlib.Path.home() / ".claude" / "pipelit"
 GUANCE_CONFIG_FILE = USER_CONFIG_DIR / "guance_config.json"
+
+
+def _migrate_legacy_cache() -> None:
+    """一次性迁移：从旧的 <plugin_root>/.cache/guance_config.json 迁移到新位置。"""
+    if GUANCE_CONFIG_FILE.exists():
+        return
+    candidates = []
+    env_root = os.environ.get("CLAUDE_PLUGIN_ROOT")
+    if env_root:
+        candidates.append(pathlib.Path(env_root) / ".cache" / "guance_config.json")
+    candidates.append(pathlib.Path(__file__).parent.parent / ".cache" / "guance_config.json")
+    for legacy in candidates:
+        if legacy.exists():
+            USER_CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+            GUANCE_CONFIG_FILE.write_bytes(legacy.read_bytes())
+            return
+
+
+_migrate_legacy_cache()
 
 HTTP_TIMEOUT = 30
 LOG_SOURCE = "ads-backend"
 # 观测云 OpenAPI 端点（按优先级尝试）
 QUERY_PATHS = [
+    "/api/v1/df/query_data_v1",
     "/api/v1/df_query_data",
     "/api/v1/dql/query",
-    "/api/v1/query/data",
 ]
 
 
@@ -94,6 +111,7 @@ def _post(url: str, api_key: str, workspace_id: str, body: dict) -> dict:
         "Content-Type": "application/json",
         "DF-API-KEY": api_key,
         "DF-WORKSPACE-UUID": workspace_id,
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
     }
     req = urllib.request.Request(url, data=data, headers=headers, method="POST")
     try:
@@ -198,20 +216,29 @@ def _dql(cfg: dict, q: str, start_ms: int, end_ms: int, limit: int) -> list[dict
                 raise RuntimeError(f"查询失败 (code={code})：{last_err}")
 
             # 解析 series → list[dict]
-            content = result.get("content") or result.get("data") or []
-            if not isinstance(content, list) or not content:
+            # API 返回列式格式：content.data[0].series = [{columns:[t,col], values:[[t,v],...]}]
+            content = result.get("content") or {}
+            data_list = content.get("data") if isinstance(content, dict) else content
+            if not data_list or not isinstance(data_list, list):
                 return []
-            item = content[0]
-            if isinstance(item, dict):
-                series_list = item.get("series") or item.get("data", {}).get("series") or []
-            else:
-                series_list = []
+            item = data_list[0]
+            series_list = item.get("series") or []
+            if not series_list:
+                return []
 
+            # 重建行式数据：每个 series 对应一列，按 index 对齐
+            n = len(series_list[0].get("values", []))
             rows = []
-            for s in series_list:
-                cols = s.get("columns", [])
-                for vals in s.get("values", []):
-                    rows.append(dict(zip(cols, vals)))
+            for i in range(n):
+                row = {}
+                for s in series_list:
+                    cols = s.get("columns", [])
+                    vals = s.get("values", [])
+                    if i < len(vals):
+                        for j, c in enumerate(cols):
+                            if j < len(vals[i]):
+                                row[c] = vals[i][j]
+                rows.append(row)
             return rows
 
         except RuntimeError:
@@ -288,7 +315,7 @@ def query_errors(start: str, end: str, limit: int = 500) -> dict:
     start_ms = parse_time(start)
     end_ms = parse_time(end)
 
-    q = f"L::re('{LOG_SOURCE}')[status IN ['error','warning','critical']] LIMIT {limit}"
+    q = f"L::re('{LOG_SOURCE}'){{status IN ['error','warning','critical']}} LIMIT {limit}"
     rows = _dql(cfg, q, start_ms, end_ms, limit)
 
     # ── 三维聚合 ──────────────────────────────────────────────────────────────

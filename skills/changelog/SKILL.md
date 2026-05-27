@@ -19,17 +19,17 @@ description: >
 ### 0.1 读取发版配置
 
 ```bash
-cat .claude/release-config.json 2>/dev/null || echo "NOT_FOUND"
+PYTHONIOENCODING=utf-8 python3 "${CLAUDE_PLUGIN_ROOT}/scripts/feishu_api.py" get_release_config
 ```
 
-读取 `repos`、`changelog.outputDir`、`changelog.audience`、`feishuWikiUrl`。
+从返回的 `release` 字段中读取 `repos`、`changelog.outputDir`、`changelog.audience`、`feishuWikiUrl`。
 
 **受众解读：**
 - `"business"` 或未配置 → 读者是业务/运营人员，用通俗语言，过滤所有技术细节
 - `"technical"` → 读者是研发团队，可保留技术描述
 - 其他字符串 → 以该字符串作为读者画像
 
-不存在时：默认使用当前目录单仓库，`outputDir` 默认 `changelog-workspace/`，`audience` 默认 `business`。
+`configured: false` 时：默认使用当前目录单仓库，`outputDir` 默认 `changelog-workspace/`，`audience` 默认 `business`。
 
 ### 0.2 确定 commit range
 
@@ -244,5 +244,5 @@ mkdir -p <outputDir>
   ○ 不需要
 ```
 
-选"是"时：追加输入框让用户填写 URL，填写后自动写入 `.claude/release-config.json` 的 `feishuWikiUrl` 字段，并补充输出含链接的完整概述。
+选"是"时：追加输入框让用户填写 URL，填写后通过 `save_release_config` 更新 `feishuWikiUrl` 字段，并补充输出含链接的完整概述。
 选"不需要"时：不再询问，流程结束。

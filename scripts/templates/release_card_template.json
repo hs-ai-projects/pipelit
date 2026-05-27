@@ -1,0 +1,47 @@
+{
+  "schema": "2.0",
+  "header": {
+    "title": {"tag": "plain_text", "content": "{{version}} 更新概述（{{date}}）"},
+    "template": "blue"
+  },
+  "body": {
+    "elements": [
+      {
+        "tag": "column_set",
+        "flex_mode": "none",
+        "columns": [
+          {
+            "tag": "column",
+            "width": "weighted",
+            "weight": 3,
+            "vertical_align": "center",
+            "elements": [
+              {
+                "tag": "div",
+                "text": {
+                  "tag": "lark_md",
+                  "content": "{{content}}\n\n[查看完整文档 →]({{doc_url}})"
+                }
+              }
+            ]
+          },
+          {
+            "tag": "column",
+            "width": "weighted",
+            "weight": 2,
+            "vertical_align": "center",
+            "elements": [
+              {
+                "tag": "img",
+                "img_key": "img_v3_02122_cb389153-31d3-4b52-9c18-5888943c659g",
+                "alt": {"tag": "plain_text", "content": ""},
+                "mode": "fit_horizontal",
+                "preview": false
+              }
+            ]
+          }
+        ]
+      }
+    ]
+  }
+}
