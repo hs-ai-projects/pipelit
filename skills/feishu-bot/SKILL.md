@@ -296,10 +296,18 @@ Token 会在第 5 节 Bot 初始化时一并配置。
 
 ## 5. Bot 初始化配置
 
+> **CentOS 8 / 系统 Python < 3.10 的环境**：把下文所有 `python3` 替换成
+> `uv run --python 3.11 python`（参考第 2.6 节）。下面的命令会同时给出两种形式。
+
 在服务器上运行配置向导：
 
 ```bash
+# Ubuntu / Python 3.10+ 的系统
 PYTHONIOENCODING=utf-8 python3 ~/pipelit/scripts/feishu_bot_webhook.py setup
+
+# CentOS 8 等系统 Python 太老的场景
+PYTHONIOENCODING=utf-8 uv run --python 3.11 \
+  python ~/pipelit/scripts/feishu_bot_webhook.py setup
 ```
 
 按提示填入：
@@ -320,7 +328,12 @@ GitLab Token:                 glpat-xxxxxxxxxxxxxxxxxxxx
 配置完成后验证：
 
 ```bash
+# Ubuntu / Python 3.10+
 PYTHONIOENCODING=utf-8 python3 ~/pipelit/scripts/feishu_api.py get_bot_config
+
+# CentOS 8 等老系统
+PYTHONIOENCODING=utf-8 uv run --python 3.11 \
+  python ~/pipelit/scripts/feishu_api.py get_bot_config
 ```
 
 输出 `"configured": true` 即配置成功。
@@ -332,9 +345,15 @@ PYTHONIOENCODING=utf-8 python3 ~/pipelit/scripts/feishu_api.py get_bot_config
 ### 6.1 手动启动（测试用）
 
 ```bash
+# Ubuntu / Python 3.10+
 CLAUDE_PLUGIN_ROOT=~/pipelit \
 ANTHROPIC_API_KEY=sk-ant-xxx \
 python3 ~/pipelit/scripts/feishu_bot_webhook.py serve
+
+# CentOS 8 等系统 Python 太老的场景
+CLAUDE_PLUGIN_ROOT=~/pipelit \
+ANTHROPIC_API_KEY=sk-ant-xxx \
+uv run --python 3.11 python ~/pipelit/scripts/feishu_bot_webhook.py serve
 
 # 输出类似：
 # {
@@ -362,6 +381,8 @@ WorkingDirectory=/home/ubuntu/project
 Environment="CLAUDE_PLUGIN_ROOT=/home/ubuntu/pipelit"
 Environment="ANTHROPIC_API_KEY=sk-ant-xxxxxxxxxxxxxxxx"
 ExecStart=/usr/bin/python3 /home/ubuntu/pipelit/scripts/feishu_bot_webhook.py serve
+# CentOS 8 等老系统改用 uv（先 which uv 看实际路径，常见 /root/.local/bin/uv）：
+# ExecStart=/root/.local/bin/uv run --python 3.11 python /root/pipelit/scripts/feishu_bot_webhook.py serve
 Restart=on-failure
 RestartSec=5
 StandardOutput=journal
@@ -415,6 +436,66 @@ server {
 ```
 
 > 飞书生产环境要求 HTTPS，建议用 Nginx + Let's Encrypt。
+
+### 6.4 长连接模式（推荐：bot 在内网，没有公网入口）
+
+如果 bot 部署在内网，**没法暴露公网 URL 给飞书 push 事件**，
+就用飞书 SDK 的 WebSocket 长连接：**bot 主动连飞书，飞书通过这条连接 push 事件**。
+
+```
+传统 webhook 模式：飞书 → POST 你的公网 URL → bot
+长连接模式：      bot → 主动 WSS 连接 → 飞书   （只需要"出方向"公网可达）
+```
+
+入口脚本是 `scripts/feishu_bot_longpoll.py`，业务逻辑与 webhook 模式完全相同
+（复用 `feishu_bot_webhook.py` 的事件解析和 analyzer 调用）。
+
+**前置条件**：服务器能访问公网（用 `curl https://open.feishu.cn` 测试）。
+
+**步骤 1：安装 SDK**
+
+```bash
+# Ubuntu / Python 3.10+
+pip3 install lark-oapi
+
+# CentOS 8 等老系统（系统 Python 太老，走 uv）
+uv pip install --python 3.11 lark-oapi
+
+# 国内 PyPI 慢则加镜像
+uv pip install --python 3.11 lark-oapi -i https://pypi.tuna.tsinghua.edu.cn/simple
+```
+
+**步骤 2：启动**
+
+```bash
+# Ubuntu / Python 3.10+
+CLAUDE_PLUGIN_ROOT=~/pipelit \
+ANTHROPIC_API_KEY=sk-ant-xxx \
+python3 ~/pipelit/scripts/feishu_bot_longpoll.py serve
+
+# CentOS 8 / uv
+CLAUDE_PLUGIN_ROOT=~/pipelit \
+ANTHROPIC_API_KEY=sk-ant-xxx \
+uv run --python 3.11 python ~/pipelit/scripts/feishu_bot_longpoll.py serve
+```
+
+**步骤 3：飞书后台配置**
+
+- **不需要**填事件订阅 URL、不需要填卡片回调 URL
+- 仍然要在「事件订阅」里**订阅事件**：`task.v2.task_created_v1`、`task.v2.task_updated_v1`
+- 应用必须已发布 + 权限审批通过
+
+**与 webhook 模式的差别**：
+
+| 项 | webhook | longpoll |
+|---|---|---|
+| 公网入口 | 必须 | 不需要 |
+| 飞书后台 URL 配置 | 必填 | 留空 |
+| 服务器监听端口 | 8765 | 不监听端口 |
+| 网络模型 | 飞书 → 服务器（入站） | 服务器 → 飞书（出站） |
+| 依赖 | 仅 stdlib | + lark-oapi |
+
+**systemd 部署**：跟 6.2 节相同，把 `ExecStart` 换成 `feishu_bot_longpoll.py serve` 的命令即可。
 
 ---
 
