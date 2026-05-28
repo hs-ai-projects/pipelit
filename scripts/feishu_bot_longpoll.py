@@ -125,7 +125,7 @@ def _to_dict(data) -> dict:
 # ── SDK 回调 ────────────────────────────────────────────────────────────────
 
 def on_task_updated(data) -> None:
-    """task.v2.task_updated_v1 回调（成员变更/状态变更）。"""
+    """task.v2.task_updated_v1 回调（应用维度，只追踪 bot 自己创建的任务）。"""
     body = _to_dict(data)
     threading.Thread(
         target=_process_task_event,
@@ -134,8 +134,22 @@ def on_task_updated(data) -> None:
     ).start()
 
 
+def on_task_user_access_updated(data) -> None:
+    """task.task.update_user_access_v2 回调（用户维度，覆盖客户端创建的任务）。
+
+    这才是"指派给我的任务"场景需要的事件。SDK 1.6.x 没有内置 handler，
+    走 register_p1_customized_event 自定义订阅接收。
+    """
+    body = _to_dict(data)
+    threading.Thread(
+        target=_process_task_event,
+        args=("task_updated", body),   # 复用 task_updated 分支的过滤逻辑
+        daemon=True,
+    ).start()
+
+
 def on_task_created(data) -> None:
-    """task.v2.task_created_v1 回调（走自定义事件订阅，SDK 无专用 handler）。"""
+    """task.task.created_v1 回调（自定义订阅兜底）。"""
     body = _to_dict(data)
     threading.Thread(
         target=_process_task_event,
@@ -198,10 +212,13 @@ def cmd_serve() -> None:
         log(f"[warn] {w}")
 
     # 注册事件分发器（长连接模式两个参数都传空字符串）
+    # 用户维度事件（task.task.update_user_access_v2）SDK 1.6.x 没内置 handler，
+    # 走 register_p1_customized_event 自定义订阅。
     handler = (
         lark.EventDispatcherHandler.builder("", "")
         .register_p2_task_task_updated_v1(on_task_updated)
-        .register_p1_customized_event("task.v2.task_created_v1", on_task_created)
+        .register_p1_customized_event("task.task.update_user_access_v2", on_task_user_access_updated)
+        .register_p1_customized_event("task.task.created_v1", on_task_created)
         .register_p2_card_action_trigger(on_card_action)
         .build()
     )
