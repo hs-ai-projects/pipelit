@@ -18,6 +18,8 @@ Usage:
   python3 feishu_api.py get_release_config
   python3 feishu_api.py save_release_config '<json_string>'
   python3 feishu_api.py resolve_task_guid <task_id_or_short_prefix>
+  python3 feishu_api.py print_auth_url             # 无浏览器环境：打印授权链接，手动复制
+  python3 feishu_api.py exchange_code <code>        # 无浏览器环境：用授权码直接换 token
   python3 feishu_api.py pick_task_at_open_id <task_id> [--rule first_follower] [--exclude ou_x,ou_y]
   python3 feishu_api.py send_release_card_with_mentions '<json_string>' | '@params.json'
 
@@ -346,6 +348,42 @@ def auth() -> dict:
     if result.get("code") != 0:
         raise RuntimeError(f"换取 token 失败（code={result.get('code')}）：{result.get('msg')}")
 
+    _save_user_token(result["data"])
+    return {"success": True, "message": "用户授权成功，token 已缓存"}
+
+
+def print_auth_url() -> dict:
+    """无浏览器环境：打印授权链接，让用户在本地浏览器手动完成授权，再用 exchange_code 换 token。"""
+    import urllib.parse
+
+    cfg = read_config()
+    if not cfg:
+        raise RuntimeError("请先配置 app_id/app_secret")
+
+    state = os.urandom(8).hex()
+    scope = "task:task:read task:task:write task:comment:write task:attachment:read"
+    auth_url = (
+        f"{FEISHU_BASE}/open-apis/authen/v1/authorize"
+        f"?app_id={cfg['app_id']}"
+        f"&redirect_uri={urllib.parse.quote(AUTH_REDIRECT_URI)}"
+        f"&scope={urllib.parse.quote(scope)}"
+        f"&state={state}"
+    )
+    print(f"\n请在本地浏览器打开以下链接完成授权：\n\n{auth_url}\n", file=sys.stderr)
+    print("授权后浏览器会跳到 127.0.0.1:9876（连接失败没关系），", file=sys.stderr)
+    print("从地址栏复制 code=xxx 的值，然后运行：", file=sys.stderr)
+    print("  python3 feishu_api.py exchange_code <code>\n", file=sys.stderr)
+    return {"auth_url": auth_url}
+
+
+def exchange_code(code: str) -> dict:
+    """用授权码换取 user_access_token 并缓存（无浏览器环境专用）。"""
+    app_token = _get_app_token()
+    result = http("POST", "/open-apis/authen/v1/oidc/access_token",
+                  token=app_token,
+                  body={"grant_type": "authorization_code", "code": code})
+    if result.get("code") != 0:
+        raise RuntimeError(f"换取 token 失败（code={result.get('code')}）：{result.get('msg')}")
     _save_user_token(result["data"])
     return {"success": True, "message": "用户授权成功，token 已缓存"}
 
@@ -987,6 +1025,10 @@ def main():
             out = save_project_config(frontend, backend)
         elif cmd == "auth":
             out = auth()
+        elif cmd == "print_auth_url":
+            out = print_auth_url()
+        elif cmd == "exchange_code":
+            out = exchange_code(args[1])
         elif cmd == "save_user":
             email = args[args.index("--email") + 1] if "--email" in args else None
             mobile = args[args.index("--mobile") + 1] if "--mobile" in args else None
