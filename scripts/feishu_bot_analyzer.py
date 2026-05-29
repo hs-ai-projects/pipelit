@@ -94,7 +94,7 @@ def _feishu_api(*args: str) -> dict:
     script = str(PLUGIN_ROOT / "scripts" / "feishu_api.py")
     env    = {**os.environ, "CLAUDE_PLUGIN_ROOT": str(PLUGIN_ROOT)}
     r = subprocess.run(
-        ["python3", script, *args],
+        [sys.executable, script, *args],
         capture_output=True, text=True, timeout=20, env=env,
     )
     if r.returncode != 0:
