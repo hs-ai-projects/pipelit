@@ -224,8 +224,8 @@ def cmd_serve() -> None:
     handler = (
         lark.EventDispatcherHandler.builder("", "")
         .register_p2_task_task_updated_v1(on_task_updated)
-        .register_p1_customized_event("task.task.update_user_access_v2", on_task_user_access_updated)
-        .register_p1_customized_event("task.task.created_v1", on_task_created)
+        .register_p2_customized_event("task.task.update_user_access_v2", on_task_user_access_updated)
+        .register_p2_customized_event("task.task.created_v1", on_task_created)
         .register_p2_card_action_trigger(on_card_action)
         .build()
     )
