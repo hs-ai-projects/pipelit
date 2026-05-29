@@ -233,8 +233,12 @@ Encrypt Key 用于验证飞书发来的请求是否合法，防伪造请求。
 
 | 事件名 | 用途 |
 |--------|------|
-| `task.v2.task_created_v1` | 新任务创建时触发 |
-| `task.v2.task_updated_v1` | 任务更新（含成员变更/指派）时触发 |
+| `task.task.update_user_access_v2` | 任务指派给我时触发（客户端创建的任务用这个） |
+| `task.v2.task_updated_v1` | 任务更新（应用维度，备用） |
+| `task.task.created_v1` | 新任务创建时触发 |
+
+> ⚠️ 注意：客户端创建的任务指派事件是 `task.task.update_user_access_v2`，
+> 不是 `task.v2.task_created_v1`。订阅错了收不到。
 
 ### 3.6 配置卡片回调 URL
 
@@ -473,10 +477,15 @@ CLAUDE_PLUGIN_ROOT=~/pipelit \
 ANTHROPIC_API_KEY=sk-ant-xxx \
 python3 ~/pipelit/scripts/feishu_bot_longpoll.py serve
 
-# CentOS 8 / uv
+# CentOS 8 / uv（走 uv run）
 CLAUDE_PLUGIN_ROOT=~/pipelit \
 ANTHROPIC_API_KEY=sk-ant-xxx \
 uv run --python 3.11 python ~/pipelit/scripts/feishu_bot_longpoll.py serve
+
+# 推荐：直接用 venv 里的 Python（uv venv 创建的）
+CLAUDE_PLUGIN_ROOT=~/pipelit \
+ANTHROPIC_API_KEY=sk-ant-xxx \
+~/pipelit/.venv/bin/python ~/pipelit/scripts/feishu_bot_longpoll.py serve
 ```
 
 **步骤 3：飞书后台配置**

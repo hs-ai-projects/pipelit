@@ -102,6 +102,12 @@ def _process_task_event(event_type: str, body: dict) -> None:
                 log("[event] task_created not in trigger_events, skip")
                 return
 
+        elif "task_user_access" in event_type:
+            # 用户维度事件，飞书已过滤，无需再检查 is_assigned_to_me
+            if "task_assigned" not in trigger_events:
+                log("[event] task_assigned not in trigger_events, skip")
+                return
+
         elif "task_updated" in event_type:
             if "task_assigned" not in trigger_events:
                 log("[event] task_assigned not in trigger_events, skip")
@@ -139,11 +145,12 @@ def on_task_user_access_updated(data) -> None:
 
     这才是"指派给我的任务"场景需要的事件。SDK 1.6.x 没有内置 handler，
     走 register_p1_customized_event 自定义订阅接收。
+    用户维度事件本身已过滤，无需再做 is_assigned_to_me 检查，用独立 event_type 标记。
     """
     body = _to_dict(data)
     threading.Thread(
         target=_process_task_event,
-        args=("task_updated", body),   # 复用 task_updated 分支的过滤逻辑
+        args=("task_user_access", body),   # 独立类型，跳过 is_assigned_to_me 检查
         daemon=True,
     ).start()
 
