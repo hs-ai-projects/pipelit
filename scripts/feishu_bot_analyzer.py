@@ -37,9 +37,12 @@ PLUGIN_ROOT = pathlib.Path(
     os.environ.get("CLAUDE_PLUGIN_ROOT", pathlib.Path(__file__).parent.parent)
 )
 CACHE_DIR   = PLUGIN_ROOT / ".cache"
-CONFIG_FILE = CACHE_DIR / "config.json"
 PENDING_DIR = CACHE_DIR / "pending"    # 存待确认的需求分析
-LOG_DIR     = CACHE_DIR / "webhook_logs"
+
+# 复用 feishu_api 的配置路径（~/.claude/pipelit/config.json），跟 longpoll 对齐
+sys.path.insert(0, str(pathlib.Path(__file__).parent))
+from feishu_api import read_config, USER_CONFIG_DIR
+LOG_DIR = USER_CONFIG_DIR / "webhook_logs"
 
 # claude --print 使用的模型，支持环境变量覆盖
 ANALYSIS_MODEL  = os.environ.get("BOT_ANALYSIS_MODEL",  "claude-haiku-4-5-20251001")
@@ -59,11 +62,6 @@ def log(msg: str) -> None:
 
 
 # ── 配置 ───────────────────────────────────────────────────────────────────────
-
-def read_config() -> dict:
-    if CONFIG_FILE.exists():
-        return json.loads(CONFIG_FILE.read_text(encoding="utf-8"))
-    return {}
 
 
 def bot_cfg() -> dict:
