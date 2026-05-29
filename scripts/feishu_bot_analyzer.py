@@ -333,10 +333,8 @@ def build_l3_card(task_id: str, summary: str, analysis: dict) -> dict:
                 f"**涉及范围：**\n{plan_md}"
             )}},
             {"tag": "hr"},
-            {"tag": "action", "actions": [
-                {"tag": "button", "text": {"tag": "plain_text", "content": "查看任务"},
-                 "url": _task_link(task_id), "type": "default"},
-            ]},
+            {"tag": "button", "text": {"tag": "plain_text", "content": "查看任务"},
+             "url": _task_link(task_id), "type": "default"},
         ]},
     }
 
@@ -357,15 +355,12 @@ def build_feature_confirm_card(task_id: str, summary: str, analysis: dict) -> di
                 f"**初步 Plan：**\n{plan_md}"
             )}},
             {"tag": "hr"},
-            {"tag": "action", "actions": [
-                # value 传 task_id 给 card-action 回调
-                {"tag": "button",
-                 "text":  {"tag": "plain_text", "content": "✅ 确认开发"},
-                 "type":  "primary",
-                 "value": {"action": "confirm_dev", "task_id": task_id}},
-                {"tag": "button", "text": {"tag": "plain_text", "content": "查看任务"},
-                 "url": _task_link(task_id), "type": "default"},
-            ]},
+            {"tag": "button",
+             "text":  {"tag": "plain_text", "content": "✅ 确认开发"},
+             "type":  "primary",
+             "value": {"action": "confirm_dev", "task_id": task_id}},
+            {"tag": "button", "text": {"tag": "plain_text", "content": "查看任务"},
+             "url": _task_link(task_id), "type": "default"},
         ]},
     }
 
@@ -403,7 +398,7 @@ def build_result_card(task_id: str, summary: str, result: dict,
                 f"{mr_line}"
             )}},
             {"tag": "hr"},
-            {"tag": "action", "actions": actions},
+            *actions,
         ]},
     }
 
@@ -423,10 +418,8 @@ def build_error_card(task_id: str, summary: str, error: str) -> dict:
                 f"请手动处理或查看日志。"
             )}},
             {"tag": "hr"},
-            {"tag": "action", "actions": [
-                {"tag": "button", "text": {"tag": "plain_text", "content": "查看任务"},
-                 "url": _task_link(task_id), "type": "default"},
-            ]},
+            {"tag": "button", "text": {"tag": "plain_text", "content": "查看任务"},
+             "url": _task_link(task_id), "type": "default"},
         ]},
     }
 
