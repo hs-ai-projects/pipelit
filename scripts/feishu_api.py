@@ -17,6 +17,12 @@ Usage:
   python3 feishu_api.py add_comment <task_id> <comment>
   python3 feishu_api.py get_release_config
   python3 feishu_api.py save_release_config '<json_string>'
+  python3 feishu_api.py resolve_task_guid <task_id_or_short_prefix>
+  python3 feishu_api.py pick_task_at_open_id <task_id> [--rule first_follower] [--exclude ou_x,ou_y]
+  python3 feishu_api.py send_release_card_with_mentions '<json_string>' | '@params.json'
+
+Note: 长 JSON 参数可用 @path 语法从文件读取，避免 Windows shell 引号转义问题。
+      支持的命令：build_release_card、send_release_card_with_mentions。
 
 Output: JSON to stdout. Errors to stderr (JSON format), exit code 1.
 """
@@ -519,7 +525,7 @@ def get_subtasks(task_id: str) -> dict:
 def get_task_full(task_id: str) -> dict:
     """一次调用拿到任务全部上下文：任务详情 + 子任务 + 附件图片 + 项目配置。"""
     tid = parse_task_id(task_id)
-    token = get_token()
+    token = get_user_token()  # 个人任务需要 user_access_token
 
     # 任务详情
     task_result = http("GET", f"/open-apis/task/v2/tasks/{tid}?user_id_type=user_id", token=token)
@@ -685,17 +691,28 @@ def send_card(receive_id: str, card: dict, receive_id_type: str = "chat_id") -> 
     return {"success": True, "message_id": msg_id, "receive_id": receive_id}
 
 
+def _load_json_param(arg: str) -> dict:
+    """支持两种形式：直接 JSON 字符串 或 @path 表示从文件读取。
+
+    @file 形式避免 Windows shell 对长 JSON 字符串的引号转义问题。
+    """
+    if arg.startswith("@"):
+        return json.loads(pathlib.Path(arg[1:]).read_text(encoding="utf-8"))
+    return json.loads(arg)
+
+
 def build_release_card(params_json: str) -> dict:
     """从版本信息构建飞书发版卡片。
 
-    params_json: JSON 字符串，字段：version, date, content, doc_url(可选)
+    params_json: JSON 字符串或 @file，字段：version, date, content, doc_url(可选), img_key(可选)
     返回可直接传给 send_card 的卡片 dict。
     """
-    params = json.loads(params_json)
+    params = _load_json_param(params_json)
     version = params["version"]
     date = params["date"]
     content = params["content"]
     doc_url = params.get("doc_url", "")
+    img_key = params.get("img_key")
 
     template_file = TEMPLATE_DIR / "release_card_template.json"
     if not template_file.exists():
@@ -721,7 +738,174 @@ def build_release_card(params_json: str) -> dict:
         body_text = body_text.replace("\n\n[查看完整文档 →]({{doc_url}})", "")
     text_el["content"] = body_text
 
+    # 替换 img_key（若模板含 {{img_key}} 占位符或调用方传入了新 img_key）
+    if el["tag"] == "column_set":
+        for col in el["columns"]:
+            for elem in col["elements"]:
+                if elem.get("tag") == "img":
+                    if img_key:
+                        elem["img_key"] = img_key
+                    elif "{{img_key}}" in elem.get("img_key", ""):
+                        # 模板用了占位符但调用方没传，保留原占位（让上游报错更清晰）
+                        pass
+
     return template
+
+
+def pick_task_at_open_id(
+    task_id: str,
+    rule: str = "first_follower",
+    exclude: list[str] | None = None,
+) -> str | None:
+    """按规则取飞书任务的 @ open_id。
+
+    rule:
+      - first_follower: 第一个 role=follower 且不在 exclude 的 open_id
+      - first_assignee: 第一个 role=assignee 且不在 exclude 的 open_id
+      - first_member:   不区分 role，按 members 顺序第一个不在 exclude 的 open_id
+    task_id: 完整 UUID 或 ≥4 位短前缀（前缀时会自动调 list_tasks 匹配）
+    exclude: 黑名单 open_id 列表
+    返回单个 open_id，找不到则返回 None。
+    """
+    exclude_set = set(exclude or [])
+    full_id = resolve_task_guid(task_id)
+    token = get_token()
+    result = http(
+        "GET",
+        f"/open-apis/task/v2/tasks/{full_id}?user_id_type=open_id",
+        token=token,
+    )
+    if result.get("code") != 0:
+        raise RuntimeError(f"获取任务失败（code={result.get('code')}）：{result.get('msg')}")
+    members = result.get("data", {}).get("task", {}).get("members", [])
+
+    def _pick(role_filter: str | None) -> str | None:
+        for m in members:
+            if role_filter and m.get("role") != role_filter:
+                continue
+            oid = m.get("id")
+            if oid and oid not in exclude_set:
+                return oid
+        return None
+
+    if rule == "first_follower":
+        return _pick("follower")
+    if rule == "first_assignee":
+        return _pick("assignee")
+    if rule == "first_member":
+        return _pick(None)
+    raise RuntimeError(f"未知 at_rule：{rule}（可选：first_follower / first_assignee / first_member）")
+
+
+def resolve_task_guid(task_id: str) -> str:
+    """8 位前缀 → 完整 GUID；已是完整 GUID 则原样返回。
+
+    标准 UUID 长度 36（含 4 个连字符）。短前缀时通过 list_tasks 匹配。
+    """
+    if len(task_id) >= 36 and task_id.count("-") == 4:
+        return task_id
+    if len(task_id) < 4:
+        raise RuntimeError(f"task_id 太短（至少 4 位）：{task_id}")
+
+    token = get_user_token()
+    for completed in (False, True):
+        params = f"page_size=100&completed={str(completed).lower()}&user_id_type=user_id"
+        try:
+            result = http("GET", f"/open-apis/task/v2/tasks?{params}", token=token)
+        except Exception:
+            continue
+        if result.get("code") != 0:
+            continue
+        for t in result.get("data", {}).get("items", []):
+            if t.get("guid", "").startswith(task_id):
+                return t["guid"]
+    raise RuntimeError(f"在飞书任务列表中找不到匹配前缀的任务：{task_id}")
+
+
+def send_release_card_with_mentions(params_json: str) -> dict:
+    """一站式：组合带 @ 关注人的 changelog → 构建卡片 → 发送到飞书群。
+
+    params_json 字段（JSON 字符串或 @file）:
+      version       (必需) 版本号，如 "v3.9.1"
+      date          (必需) 日期，如 "2026-05-28"
+      chat_id       (必需) 飞书群 chat_id（oc_ 开头）
+      sections      (必需) [{"title": "**✨ 新功能**",
+                            "entries": [{"text": "...", "task_id": "..."(可选)}]}]
+      doc_url       (可选) 末尾文档链接
+      image_path    (可选) 本地图片路径（不填则用模板默认 img_key）
+      at_rule       (可选) first_follower (默认) / first_assignee / first_member / none
+      exclude_open_ids (可选) 黑名单 open_id 列表
+
+    返回 {success, message_id, chat_id, task_mentions, content_preview}
+    """
+    params = _load_json_param(params_json)
+    version = params["version"]
+    date = params["date"]
+    chat_id = params["chat_id"]
+    sections = params["sections"]
+    doc_url = params.get("doc_url", "")
+    image_path = params.get("image_path")
+    at_rule = params.get("at_rule", "first_follower")
+    exclude = list(params.get("exclude_open_ids", []))
+
+    # 1. 为每个唯一 task_id 查 @ open_id 和完整 GUID
+    task_mentions: dict[str, str | None] = {}
+    task_guids: dict[str, str | None] = {}
+    for sec in sections:
+        for entry in sec.get("entries", []):
+            tid = entry.get("task_id")
+            if not tid or tid in task_mentions:
+                continue
+            try:
+                task_guids[tid] = resolve_task_guid(tid)
+            except Exception as e:
+                task_guids[tid] = None
+                print(f"[warn] resolve_task_guid({tid}): {e}", file=sys.stderr)
+            if at_rule != "none":
+                try:
+                    task_mentions[tid] = pick_task_at_open_id(tid, at_rule, exclude)
+                except Exception as e:
+                    task_mentions[tid] = None
+                    print(f"[warn] pick_task_at_open_id({tid}): {e}", file=sys.stderr)
+            else:
+                task_mentions[tid] = None
+
+    # 2. 拼装 lark_md 内容
+    lines: list[str] = []
+    for sec in sections:
+        lines.append(sec["title"])
+        for entry in sec.get("entries", []):
+            line = entry["text"]
+            tid = entry.get("task_id")
+            oid = task_mentions.get(tid) if tid else None
+            if oid:
+                line += f" <at id={oid}></at>"
+            lines.append(line)
+        lines.append("")
+    content = "\n".join(lines).rstrip()
+
+    # 3. 上传图片（若指定）
+    img_key = upload_image(image_path) if image_path else None
+
+    # 4. 构建卡片
+    card_params: dict = {"version": version, "date": date, "content": content}
+    if doc_url:
+        card_params["doc_url"] = doc_url
+    if img_key:
+        card_params["img_key"] = img_key
+    card = build_release_card(json.dumps(card_params, ensure_ascii=False))
+
+    # 5. 发送
+    result = send_card(chat_id, card)
+    return {
+        "success": result["success"],
+        "message_id": result["message_id"],
+        "chat_id": chat_id,
+        "image_key": img_key,
+        "task_mentions": task_mentions,
+        "task_guids": task_guids,
+        "content_preview": content,
+    }
 
 
 def send_message(chat_id: str, text: str) -> dict:
@@ -838,6 +1022,16 @@ def main():
             out = {"images": images, "count": len(images)}
         elif cmd == "build_release_card":
             out = build_release_card(args[1])
+        elif cmd == "resolve_task_guid":
+            out = {"guid": resolve_task_guid(args[1])}
+        elif cmd == "pick_task_at_open_id":
+            tid = args[1]
+            rule = args[args.index("--rule") + 1] if "--rule" in args else "first_follower"
+            excl_arg = args[args.index("--exclude") + 1] if "--exclude" in args else ""
+            excl = [s.strip() for s in excl_arg.split(",") if s.strip()]
+            out = {"open_id": pick_task_at_open_id(tid, rule, excl)}
+        elif cmd == "send_release_card_with_mentions":
+            out = send_release_card_with_mentions(args[1])
         elif cmd == "get_release_config":
             out = get_release_config()
         elif cmd == "save_release_config":
