@@ -84,11 +84,12 @@ def _process_task_event(event_type: str, body: dict) -> None:
     try:
         event   = body.get("event", {})
         task_id = (
-            event.get("task", {}).get("guid")
+            event.get("task_guid")
+            or event.get("task", {}).get("guid")
             or event.get("task_id")
         )
         if not task_id:
-            log(f"[event] no task_id, skip ({event_type}) body={json.dumps(body, ensure_ascii=False)[:500]}")
+            log(f"[event] no task_id, skip ({event_type})")
             return
 
         log(f"[event] type={event_type} task={task_id}")
