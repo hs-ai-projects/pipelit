@@ -21,10 +21,14 @@ Usage:
   python3 feishu_api.py print_auth_url             # 无浏览器环境：打印授权链接，手动复制
   python3 feishu_api.py exchange_code <code>        # 无浏览器环境：用授权码直接换 token
   python3 feishu_api.py pick_task_at_open_id <task_id> [--rule first_follower] [--exclude ou_x,ou_y]
+  python3 feishu_api.py generate_release_mascot '<json_string>' | '@params.json'
+  python3 feishu_api.py generate_release_image '<json_string>' | '@params.json'
+  python3 feishu_api.py prepare_release_card_image '<json_string>' | '@params.json'
   python3 feishu_api.py send_release_card_with_mentions '<json_string>' | '@params.json'
 
 Note: 长 JSON 参数可用 @path 语法从文件读取，避免 Windows shell 引号转义问题。
-      支持的命令：build_release_card、send_release_card_with_mentions。
+      支持的命令：build_release_card、generate_release_mascot、generate_release_image、
+      prepare_release_card_image、send_release_card_with_mentions。
 
 Output: JSON to stdout. Errors to stderr (JSON format), exit code 1.
 """
@@ -35,9 +39,17 @@ import json
 import time
 import re
 import stat
+import base64
+import random
 import urllib.request
 import urllib.error
 import pathlib
+
+try:
+    sys.stdout.reconfigure(encoding="utf-8")
+    sys.stderr.reconfigure(encoding="utf-8")
+except AttributeError:
+    pass
 
 FEISHU_BASE = "https://open.feishu.cn"
 
@@ -50,6 +62,8 @@ USER_TOKEN_CACHE = USER_CONFIG_DIR / ".user_token_cache.json"
 
 # 静态资源：跟着脚本走，相对 __file__ 引用
 TEMPLATE_DIR = pathlib.Path(__file__).parent / "templates"
+PLUGIN_ROOT = pathlib.Path(__file__).parent.parent
+DEFAULT_RELEASE_REFERENCE_IMAGE = PLUGIN_ROOT / "feilun.png"
 
 
 def _migrate_legacy_cache() -> None:
@@ -735,8 +749,390 @@ def _load_json_param(arg: str) -> dict:
     @file 形式避免 Windows shell 对长 JSON 字符串的引号转义问题。
     """
     if arg.startswith("@"):
-        return json.loads(pathlib.Path(arg[1:]).read_text(encoding="utf-8"))
+        return json.loads(pathlib.Path(arg[1:]).read_text(encoding="utf-8-sig"))
     return json.loads(arg)
+
+
+RELEASE_IMAGE_THEMES = [
+    "the mascot presenting a clean product launch dashboard",
+    "the mascot celebrating a successful software deployment",
+    "the mascot pointing at a luminous release timeline",
+    "the mascot beside modular update cards and data rings",
+    "the mascot introducing calm SaaS improvements",
+    "the mascot with circular pipeline graphics",
+]
+
+RELEASE_MASCOT_ACTIONS = [
+    "smiling and pointing upward with one hand",
+    "holding a small glowing release package",
+    "waving beside a dashboard with cheerful confidence",
+    "giving a thumbs-up near a deployment timeline",
+    "leaning forward with an excited discovery expression",
+    "presenting floating update cards with an open palm",
+]
+
+
+def _truthy(value) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        return value.strip().lower() in {"1", "true", "yes", "y", "on"}
+    return bool(value)
+
+
+def _resolve_reference_image(params: dict) -> pathlib.Path | None:
+    raw = params.get("reference_image_path") or os.environ.get("RELEASE_REFERENCE_IMAGE")
+    use_default = params.get("use_reference_image", True)
+    if not raw:
+        cfg = read_config() or {}
+        release = cfg.get("release") or {}
+        raw = release.get("mascotImagePath")
+    if raw:
+        path = pathlib.Path(raw).expanduser()
+        if not path.is_absolute():
+            user_path = (USER_CONFIG_DIR / path).resolve()
+            plugin_path = (PLUGIN_ROOT / path).resolve()
+            path = user_path if user_path.exists() else plugin_path
+        if not path.exists():
+            raise RuntimeError(f"参考图片不存在：{path}")
+        return path
+    if _truthy(use_default) and DEFAULT_RELEASE_REFERENCE_IMAGE.exists():
+        return DEFAULT_RELEASE_REFERENCE_IMAGE
+    return None
+
+
+def _release_brand_context(params: dict) -> str:
+    cfg = read_config() or {}
+    release = cfg.get("release") or {}
+    return (
+        params.get("brand_context")
+        or release.get("mascotDescription")
+        or release.get("projectName")
+        or params.get("project_name")
+        or "this software project"
+    )
+
+
+def _build_release_image_prompt(params: dict) -> str:
+    prompt = (params.get("image_prompt") or "").strip()
+    action = params.get("mascot_action") or random.choice(RELEASE_MASCOT_ACTIONS)
+    brand_context = _release_brand_context(params)
+    if prompt:
+        return (
+            "Use the provided reference image as the canonical project mascot style guide. "
+            "Preserve the mascot's identity, face, outfit silhouette, color palette, and logo language. "
+            f"Keep the same character, but use a fresh expression/action for this release: {action}. "
+            f"Brand/system context: {brand_context}. "
+            f"{prompt}"
+        )
+
+    version = params.get("version", "new release")
+    date = params.get("date", "")
+    content = re.sub(r"<[^>]+>", "", params.get("content", ""))
+    content = re.sub(r"[*_`#>\[\]()]|https?://\S+", "", content)
+    content = re.sub(r"\s+", " ", content).strip()[:700]
+    theme = random.choice(RELEASE_IMAGE_THEMES)
+    return (
+        "Use the provided reference image as the canonical project mascot style guide. "
+        "Preserve the mascot's identity, face, outfit silhouette, color palette, and logo language. "
+        f"Keep the same character, but use a fresh expression/action for this release: {action}. "
+        f"Brand/system context: {brand_context}. "
+        f"Create a 1:1 hero image for a software release card. Theme: {theme}. "
+        f"Release: {version} {date}. Highlights: {content or 'product improvements and fixes'}. "
+        "Style: modern, polished, business-friendly, bright white background, high contrast, "
+        "no readable text, no brand names, suitable as the right-side image in a Feishu/Lark announcement card."
+    )
+
+
+def _mime_type(path: pathlib.Path) -> str:
+    return {
+        ".jpg": "image/jpeg",
+        ".jpeg": "image/jpeg",
+        ".png": "image/png",
+        ".webp": "image/webp",
+    }.get(path.suffix.lower(), "application/octet-stream")
+
+
+def _post_multipart(url: str, api_key: str, fields: dict, files: list[tuple[str, pathlib.Path]]) -> dict:
+    boundary = "----PipelitImageBoundary" + os.urandom(8).hex()
+    parts: list[bytes] = []
+    for name, value in fields.items():
+        if value is None:
+            continue
+        parts.append(
+            f"--{boundary}\r\nContent-Disposition: form-data; name=\"{name}\"\r\n\r\n{value}".encode("utf-8")
+        )
+    for name, path in files:
+        parts.append(
+            (
+                f"--{boundary}\r\n"
+                f"Content-Disposition: form-data; name=\"{name}\"; filename=\"{path.name}\"\r\n"
+                f"Content-Type: {_mime_type(path)}\r\n\r\n"
+            ).encode("utf-8")
+            + path.read_bytes()
+        )
+    parts.append(f"--{boundary}--\r\n".encode("utf-8"))
+    data = b"\r\n".join(parts)
+    req = urllib.request.Request(
+        url,
+        data=data,
+        headers={
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": f"multipart/form-data; boundary={boundary}",
+        },
+        method="POST",
+    )
+    with urllib.request.urlopen(req, timeout=180) as resp:
+        return json.loads(resp.read())
+
+
+def _openai_image_request(
+    *,
+    api_key: str,
+    base_url: str,
+    body: dict,
+    reference_images: list[pathlib.Path] | None = None,
+) -> dict:
+    if reference_images:
+        return _post_multipart(
+            f"{base_url}/images/edits",
+            api_key,
+            body,
+            [("image", path) for path in reference_images],
+        )
+
+    req = urllib.request.Request(
+        f"{base_url}/images/generations",
+        data=json.dumps(body).encode("utf-8"),
+        headers={
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json",
+        },
+        method="POST",
+    )
+    with urllib.request.urlopen(req, timeout=180) as resp:
+        return json.loads(resp.read())
+
+
+def _write_openai_image(result: dict, out_path: pathlib.Path) -> None:
+    data = result.get("data") or []
+    if not data:
+        raise RuntimeError(f"OpenAI 图片生成未返回 data：{result}")
+
+    item = data[0]
+    if item.get("b64_json"):
+        out_path.write_bytes(base64.b64decode(item["b64_json"]))
+    elif item.get("url"):
+        with urllib.request.urlopen(item["url"], timeout=60) as resp:
+            out_path.write_bytes(resp.read())
+    else:
+        raise RuntimeError(f"OpenAI 图片生成结果缺少 b64_json/url：{item}")
+
+
+def _openai_image_defaults(params: dict) -> tuple[str, str, str, str]:
+    model = params.get("image_model") or os.environ.get("OPENAI_IMAGE_MODEL") or "gpt-image-2"
+    size = params.get("image_size") or os.environ.get("OPENAI_IMAGE_SIZE") or "1024x1024"
+    quality = params.get("image_quality") or os.environ.get("OPENAI_IMAGE_QUALITY") or "low"
+    base_url = (os.environ.get("OPENAI_BASE_URL") or "https://api.openai.com/v1").rstrip("/")
+    return model, size, quality, base_url
+
+
+def _require_openai_api_key() -> str:
+    api_key = os.environ.get("OPENAI_API_KEY")
+    if not api_key:
+        raise RuntimeError("未设置 OPENAI_API_KEY，无法生成图片")
+    return api_key
+
+
+def _save_release_mascot_config(path: pathlib.Path, params: dict) -> None:
+    cfg = read_config() or {}
+    release = cfg.get("release") or {}
+    release["mascotImagePath"] = str(path)
+    if params.get("mascot_description"):
+        release["mascotDescription"] = params["mascot_description"]
+    if params.get("company_icon_path"):
+        release["companyIconPath"] = params["company_icon_path"]
+    cfg["release"] = release
+    USER_CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+    _secure_write(CONFIG_FILE, json.dumps(cfg, indent=2, ensure_ascii=False))
+
+
+def _resolve_optional_image_path(raw: str | None) -> pathlib.Path | None:
+    if not raw:
+        return None
+    path = pathlib.Path(raw).expanduser()
+    if not path.is_absolute():
+        path = (PLUGIN_ROOT / path).resolve()
+    if not path.exists():
+        raise RuntimeError(f"图片文件不存在：{path}")
+    return path
+
+
+def generate_release_mascot(params_json: str) -> dict:
+    """初始化发版卡片 mascot。
+
+    params_json 字段：project_name(可选)/company_icon_path(可选)/mascot_description(可选)/
+    image_model/image_size/image_quality(可选)/save_to_config(可选，默认 true)。
+    """
+    params = _load_json_param(params_json)
+    api_key = _require_openai_api_key()
+    model, size, quality, base_url = _openai_image_defaults(params)
+    project_name = params.get("project_name") or _release_brand_context(params)
+    mascot_description = (params.get("mascot_description") or "").strip()
+    company_icon = _resolve_optional_image_path(params.get("company_icon_path"))
+
+    prompt = (
+        f"Create a stable canonical 3D cartoon mascot reference image for {project_name}. "
+        "The mascot should be friendly, memorable, brand-safe, and suitable for repeated software release cards. "
+        "Make a clean square portrait on a bright white or lightly tinted background. "
+        "Include a distinctive outfit, silhouette, color palette, and simple emblem language that can remain consistent. "
+        "Do not include readable text, brand names, UI copy, watermarks, or busy scenery. "
+        "The output should be a reusable reference image, not a one-off release poster. "
+    )
+    if mascot_description:
+        prompt += f"User-provided mascot/system description: {mascot_description}. "
+    if company_icon:
+        prompt += (
+            "Use the provided company icon only as brand inspiration for color, geometry, and emblem language. "
+            "Do not simply paste the icon; integrate its visual language into the mascot design. "
+        )
+
+    body = {"model": model, "prompt": prompt, "size": size, "n": 1}
+    if quality:
+        body["quality"] = quality
+
+    try:
+        result = _openai_image_request(
+            api_key=api_key,
+            base_url=base_url,
+            body=body,
+            reference_images=[company_icon] if company_icon else None,
+        )
+    except urllib.error.HTTPError as e:
+        raw = e.read().decode(errors="replace")
+        try:
+            detail = json.loads(raw)
+            message = detail.get("error", {}).get("message") or detail.get("message") or raw
+        except Exception:
+            message = raw
+        raise RuntimeError(f"OpenAI mascot 生成失败（HTTP {e.code}）：{message}") from e
+    except urllib.error.URLError as e:
+        raise RuntimeError(f"OpenAI mascot 生成网络失败：{e.reason}") from e
+
+    img_dir = USER_CONFIG_DIR / "release_images"
+    img_dir.mkdir(parents=True, exist_ok=True)
+    slug = re.sub(r"[^0-9A-Za-z._-]+", "-", str(project_name or "project")).strip("-") or "project"
+    out_path = img_dir / f"{slug}-mascot.png"
+    _write_openai_image(result, out_path)
+
+    if _truthy(params.get("save_to_config", True)):
+        _save_release_mascot_config(out_path, params)
+
+    return {
+        "success": True,
+        "mascot_image_path": str(out_path),
+        "company_icon_path": str(company_icon) if company_icon else None,
+        "prompt": prompt,
+        "model": model,
+        "size": size,
+        "quality": quality,
+        "saved_to_config": _truthy(params.get("save_to_config", True)),
+    }
+
+
+def generate_release_image(params_json: str) -> dict:
+    """调用 OpenAI Images API 生成发版卡片图片，保存到本地并返回 image_path。
+
+    params_json 字段：version/date/content/image_prompt(可选)/image_model(可选)/
+    image_size(可选)/image_quality(可选)/reference_image_path(可选)。
+    默认优先使用 release.mascotImagePath，未配置时才回退项目根目录 feilun.png。
+    需要环境变量 OPENAI_API_KEY。
+    """
+    params = _load_json_param(params_json)
+    api_key = _require_openai_api_key()
+
+    prompt = _build_release_image_prompt(params)
+    model, size, quality, base_url = _openai_image_defaults(params)
+    reference_image = _resolve_reference_image(params)
+
+    body = {
+        "model": model,
+        "prompt": prompt,
+        "size": size,
+        "n": 1,
+    }
+    if quality:
+        body["quality"] = quality
+
+    try:
+        result = _openai_image_request(
+            api_key=api_key,
+            base_url=base_url,
+            body=body,
+            reference_images=[reference_image] if reference_image else None,
+        )
+    except urllib.error.HTTPError as e:
+        raw = e.read().decode(errors="replace")
+        try:
+            detail = json.loads(raw)
+            message = detail.get("error", {}).get("message") or detail.get("message") or raw
+        except Exception:
+            message = raw
+        raise RuntimeError(f"OpenAI 图片生成失败（HTTP {e.code}）：{message}") from e
+    except urllib.error.URLError as e:
+        raise RuntimeError(f"OpenAI 图片生成网络失败：{e.reason}") from e
+
+    img_dir = USER_CONFIG_DIR / "release_images"
+    img_dir.mkdir(parents=True, exist_ok=True)
+    version = re.sub(r"[^0-9A-Za-z._-]+", "-", str(params.get("version", "release"))).strip("-")
+    out_path = img_dir / f"{version or 'release'}-{int(time.time())}.png"
+    _write_openai_image(result, out_path)
+
+    return {
+        "success": True,
+        "image_path": str(out_path),
+        "prompt": prompt,
+        "model": model,
+        "size": size,
+        "quality": quality,
+        "reference_image_path": str(reference_image) if reference_image else None,
+    }
+
+
+def prepare_release_card_image(params_json: str) -> dict:
+    """生成/上传发版卡片图，返回可直接写入卡片 img_key 的飞书 image_key。
+
+    params_json 字段同 generate_release_image，另支持：
+      image_path: 直接上传已有本地图片
+      generate_image: 为 false 且未传 image_path 时跳过，返回 image_key=None
+    """
+    params = _load_json_param(params_json)
+    image_path = params.get("image_path")
+    generated_image = None
+    should_generate = _truthy(params.get("generate_image", True)) or bool(params.get("image_prompt"))
+
+    if not image_path and should_generate:
+        generated_image = generate_release_image(json.dumps(params, ensure_ascii=False))
+        image_path = generated_image["image_path"]
+
+    if not image_path:
+        return {
+            "success": True,
+            "image_key": None,
+            "img_key": None,
+            "image_path": None,
+            "generated_image": None,
+            "message": "未传 image_path 且 generate_image=false，跳过发版卡片图片",
+        }
+
+    image_key = upload_image(image_path)
+    return {
+        "success": True,
+        "image_key": image_key,
+        "img_key": image_key,
+        "image_path": image_path,
+        "generated_image": generated_image,
+    }
 
 
 def build_release_card(params_json: str) -> dict:
@@ -776,16 +1172,19 @@ def build_release_card(params_json: str) -> dict:
         body_text = body_text.replace("\n\n[查看完整文档 →]({{doc_url}})", "")
     text_el["content"] = body_text
 
-    # 替换 img_key（若模板含 {{img_key}} 占位符或调用方传入了新 img_key）
+    # 替换 img_key；若模板是占位符但没有传图，则去掉图片列，避免继续使用写死图片。
     if el["tag"] == "column_set":
-        for col in el["columns"]:
-            for elem in col["elements"]:
+        for col in list(el["columns"]):
+            for elem in list(col["elements"]):
                 if elem.get("tag") == "img":
                     if img_key:
                         elem["img_key"] = img_key
                     elif "{{img_key}}" in elem.get("img_key", ""):
-                        # 模板用了占位符但调用方没传，保留原占位（让上游报错更清晰）
-                        pass
+                        col["elements"].remove(elem)
+            if not col["elements"]:
+                el["columns"].remove(col)
+        if len(el.get("columns", [])) == 1:
+            el["columns"][0]["weight"] = 1
 
     return template
 
@@ -870,11 +1269,14 @@ def send_release_card_with_mentions(params_json: str) -> dict:
       sections      (必需) [{"title": "**✨ 新功能**",
                             "entries": [{"text": "...", "task_id": "..."(可选)}]}]
       doc_url       (可选) 末尾文档链接
-      image_path    (可选) 本地图片路径（不填则用模板默认 img_key）
+      image_path    (可选) 本地图片路径（优先级高于 generate_image）
+      generate_image (可选) true 时调用 OpenAI 随机生成发版图并上传
+      image_prompt  (可选) 指定生成图片的提示词；传入时自动启用 generate_image
+      image_model / image_size / image_quality (可选) OpenAI 图片生成参数
       at_rule       (可选) first_follower (默认) / first_assignee / first_member / none
       exclude_open_ids (可选) 黑名单 open_id 列表
 
-    返回 {success, message_id, chat_id, task_mentions, content_preview}
+    返回 {success, message_id, chat_id, image_key, generated_image, task_mentions, content_preview}
     """
     params = _load_json_param(params_json)
     version = params["version"]
@@ -883,6 +1285,7 @@ def send_release_card_with_mentions(params_json: str) -> dict:
     sections = params["sections"]
     doc_url = params.get("doc_url", "")
     image_path = params.get("image_path")
+    generate_image = _truthy(params.get("generate_image")) or bool(params.get("image_prompt"))
     at_rule = params.get("at_rule", "first_follower")
     exclude = list(params.get("exclude_open_ids", []))
 
@@ -922,8 +1325,13 @@ def send_release_card_with_mentions(params_json: str) -> dict:
         lines.append("")
     content = "\n".join(lines).rstrip()
 
-    # 3. 上传图片（若指定）
-    img_key = upload_image(image_path) if image_path else None
+    # 3. 生成/上传图片，拿到飞书 image_key 后写入卡片 img_key。
+    image_params = dict(params)
+    image_params["content"] = content
+    image_params["generate_image"] = generate_image
+    prepared_image = prepare_release_card_image(json.dumps(image_params, ensure_ascii=False))
+    img_key = prepared_image.get("image_key")
+    generated_image = prepared_image.get("generated_image")
 
     # 4. 构建卡片
     card_params: dict = {"version": version, "date": date, "content": content}
@@ -940,6 +1348,7 @@ def send_release_card_with_mentions(params_json: str) -> dict:
         "message_id": result["message_id"],
         "chat_id": chat_id,
         "image_key": img_key,
+        "generated_image": generated_image,
         "task_mentions": task_mentions,
         "task_guids": task_guids,
         "content_preview": content,
@@ -1064,6 +1473,12 @@ def main():
             out = {"images": images, "count": len(images)}
         elif cmd == "build_release_card":
             out = build_release_card(args[1])
+        elif cmd == "generate_release_mascot":
+            out = generate_release_mascot(args[1])
+        elif cmd == "generate_release_image":
+            out = generate_release_image(args[1])
+        elif cmd == "prepare_release_card_image":
+            out = prepare_release_card_image(args[1])
         elif cmd == "resolve_task_guid":
             out = {"guid": resolve_task_guid(args[1])}
         elif cmd == "pick_task_at_open_id":

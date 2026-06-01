@@ -87,6 +87,19 @@ def bot_cfg() -> dict:
 
 # ── Feishu API 调用（复用 feishu_api.py）──────────────────────────────────────
 
+def _detect_python() -> str:
+    """检测本机可用的 Python 命令，按优先级依次尝试。"""
+    for candidate in ["py", "python", "python3"]:
+        try:
+            r = subprocess.run([candidate, "--version"],
+                               capture_output=True, timeout=5)
+            if r.returncode == 0:
+                return candidate
+        except (FileNotFoundError, subprocess.TimeoutExpired):
+            continue
+    return "python3"  # 兜底，让错误信息更明确
+
+
 def _feishu_api(*args: str) -> dict:
     """调用同目录的 feishu_api.py，返回解析后的 JSON。"""
     script = str(PLUGIN_ROOT / "scripts" / "feishu_api.py")
@@ -121,23 +134,61 @@ def send_message(chat_id: str, text: str) -> None:
 
 # ── Claude 调用 ────────────────────────────────────────────────────────────────
 
+def run_claude_api(prompt: str, model: str = ANALYSIS_MODEL, timeout: int = 60) -> str:
+    """
+    直接调用 Anthropic SDK，不走 claude CLI，避免 CLAUDE.md / skill 路由干扰。
+    用于 analyze 等只需要返回文本/JSON 的场景。
+    """
+    try:
+        import anthropic
+    except ImportError:
+        raise RuntimeError("请先安装：pip install anthropic")
+
+    api_key = os.environ.get("ANTHROPIC_API_KEY")
+    if not api_key:
+        raise RuntimeError("环境变量 ANTHROPIC_API_KEY 未设置")
+
+    log(f"[claude-api] model={model} prompt_len={len(prompt)}")
+    client = anthropic.Anthropic(api_key=api_key, timeout=timeout)
+    msg = client.messages.create(
+        model=model,
+        max_tokens=1024,
+        messages=[{"role": "user", "content": prompt}],
+    )
+    return msg.content[0].text
+
+
 def run_claude(prompt: str, cwd: str, model: str = EXECUTION_MODEL,
-               timeout: int = 600) -> str:
+               timeout: int = 600,
+               dangerously_skip_permissions: bool = False,
+               system_prompt: str = "") -> str:
     """
     在 cwd 目录执行 claude --print <prompt>，返回完整 stdout。
-
-    - cwd 决定了 claude 读哪个 CLAUDE.md，实现项目感知（通用化关键点）
-    - model 分析用 haiku（快），执行用 sonnet（准）
-    - timeout 默认 10 分钟，复杂任务可传更大值
+    用于 execute 等需要 claude agent 读写文件的场景。
     """
     env = {**os.environ, "CLAUDE_PLUGIN_ROOT": str(PLUGIN_ROOT)}
-    cmd = ["claude", "--print", prompt, "--model", model]
+    # 优先用环境变量指定的路径，其次自动 fallback 到常见安装位置
+    claude_bin = os.environ.get("CLAUDE_BIN", "claude")
+    if claude_bin == "claude":
+        for candidate in [
+            r"D:\node\nodejs\claude.cmd",
+            r"D:\node\nodejs\claude",
+            "/usr/local/bin/claude",
+        ]:
+            if os.path.isfile(candidate):
+                claude_bin = candidate
+                break
+    cmd = [claude_bin, "--print", prompt, "--model", model]
+    if dangerously_skip_permissions:
+        cmd.append("--dangerously-skip-permissions")
+    if system_prompt:
+        cmd += ["--system-prompt", system_prompt]
 
     log(f"[claude] model={model} cwd={cwd} prompt_len={len(prompt)}")
     try:
         r = subprocess.run(
             cmd, cwd=cwd,
-            capture_output=True, text=True,
+            capture_output=True, text=True, encoding='utf-8',
             timeout=timeout, env=env,
         )
     except FileNotFoundError:
@@ -471,9 +522,6 @@ def analyze(task_id: str) -> tuple[dict, dict]:
 
     分析用 haiku 模型（快 + 便宜），只需要分类不需要写代码。
     """
-    cfg        = bot_cfg()
-    project    = cfg["project_path"]
-
     log(f"[analyze] task_id={task_id}")
     task_data  = _feishu_api("get_task_full", task_id)
     task       = task_data["task"]
@@ -506,7 +554,7 @@ L3 判断（满足任一即为 L3）：
 
 bug 判断：标题/描述含"报错"、"异常"、"不生效"、"修复"、"fix"、"bug"、"问题"、"错误"视为 bug。"""
 
-    output   = run_claude(prompt, cwd=project, model=ANALYSIS_MODEL, timeout=60)
+    output   = run_claude_api(prompt, model=ANALYSIS_MODEL, timeout=60)
     analysis = parse_json_from_output(output)
     log(f"[analyze] result={json.dumps(analysis, ensure_ascii=False)}")
     return task_data, analysis
@@ -533,73 +581,70 @@ def execute(task_id: str, task_data: dict, analysis: dict) -> dict:
     task_type    = analysis.get("type", "bug")
     plan_text    = "\n".join(f"- {p}" for p in analysis.get("plan", []))
     task_link    = _task_link(task_id)
-    branch       = f"feat/feishu-{task_id[:8]}"
     commit_type  = "fix" if task_type == "bug" else "feat"
+    branch       = f"feat/feishu-{task_id[:8]}"
 
     log(f"[execute] task={task_id} type={task_type} branch={branch}")
 
-    # 1. 创建分支（已存在则切换）
+    # 读取项目 CLAUDE.md 作为系统提示，绕过全局路由逻辑
+    project_claude_md = ""
+    claude_md_path = pathlib.Path(project) / "CLAUDE.md"
+    if claude_md_path.exists():
+        project_claude_md = claude_md_path.read_text(encoding="utf-8")
+
+    system_prompt = f"""你是一个代码开发助手，直接执行给定的开发任务，不使用任何 skill 路由。
+
+{project_claude_md}""".strip()
+
+    head_before = git(["rev-parse", "HEAD"], cwd=project)
+
+    # 创建分支
     try:
         git(["checkout", "-b", branch], cwd=project)
     except RuntimeError:
         git(["checkout", branch], cwd=project)
 
-    # 记录执行前的 HEAD commit，后面用来判断是否有新 commit
-    head_before = git(["rev-parse", "HEAD"], cwd=project)
+    prompt = f"""请按以下任务完成代码修改并提交，不要询问确认。
 
-    # 2. 调用 claude --print 完成代码改动
-    verb   = "修复这个 Bug" if task_type == "bug" else "实现这个需求"
-    prompt = f"""请{verb}，直接修改代码并提交，不要询问确认。
+任务标题：{summary}
+任务描述：{description or '（无描述）'}
+类型：{'bug 修复' if task_type == 'bug' else '功能开发'}
+当前分支：{branch}
 
-任务：{summary}
-描述：{description}
 改动计划：
 {plan_text}
-当前分支：{branch}（已创建好，你在这个分支上）
 
-执行要求：
-1. 根据任务描述和改动计划，搜索并修改相关代码
-2. 保持与项目现有代码风格一致（参考周围代码）
-3. 只改计划中的内容，不做计划外的修改
+执行步骤：
+1. 根据改动计划搜索并修改对应代码
+2. 保持与项目现有代码风格一致
+3. 只改计划中的内容，不做计划外修改
 4. git add 改动的文件（禁止 git add -A 或 git add .）
 5. git commit -m "{commit_type}: {summary}\\n\\nFeishu-Task: {task_link}\\nCo-Authored-By: Claude <noreply@anthropic.com>"
-6. 完成后最后一行输出：DONE: <改动的文件列表>
-   若无法完成输出：FAILED: <原因>"""
+6. git push origin {branch}
+7. 最后一行输出 DONE: <改动文件列表>，失败输出 FAILED: <原因>"""
 
-    output = run_claude(prompt, cwd=project, model=EXECUTION_MODEL, timeout=600)
+    output = run_claude(prompt, cwd=project, model=EXECUTION_MODEL, timeout=600,
+                        dangerously_skip_permissions=True,
+                        system_prompt=system_prompt)
     log(f"[execute] claude output tail: {output[-300:]}")
 
-    # 3. 判断执行结果
     head_after = git(["rev-parse", "HEAD"], cwd=project)
-    committed  = head_before != head_after
-
-    if not committed:
-        # 检查 claude 是否报告失败
+    if head_before == head_after:
         failed_m = re.search(r"FAILED:\s*(.+)", output)
-        reason   = failed_m.group(1).strip() if failed_m else "未知（未检测到新 commit）"
+        reason   = failed_m.group(1).strip() if failed_m else "未检测到新 commit"
         raise RuntimeError(f"代码修改未提交：{reason}")
 
-    # 提取改动文件列表（从 DONE: 行或 git diff）
-    done_m         = re.search(r"DONE:\s*(.+)", output)
-    files_changed  = done_m.group(1).strip() if done_m else (
-        git(["diff", "--name-only", f"{head_before}..HEAD"], cwd=project)
-        .replace("\n", ", ")
+    done_m        = re.search(r"DONE:\s*(.+)", output)
+    files_changed = done_m.group(1).strip() if done_m else (
+        git(["diff", "--name-only", f"{head_before}..HEAD"], cwd=project).replace("\n", ", ")
     )
 
-    # 4. Push
-    git(["push", "origin", branch], cwd=project)
-    log(f"[execute] pushed branch={branch}")
-
-    # 5. 创建 MR/PR
+    # 创建 MR/PR
     mr_url = ""
     try:
-        mr_description = (
-            f"**飞书任务：** [{summary}]({task_link})\n\n"
-            f"**改动说明：**\n{plan_text}\n\n"
-            f"*由 Pipelit Bot 自动创建*"
-        )
         mr_url = create_mr(branch, f"{commit_type}: {summary}",
-                           mr_description, project)
+                           f"飞书任务：[{summary}]({task_link})\n\n*由 Pipelit Bot 自动创建*",
+                           project)
         log(f"[execute] MR created: {mr_url}")
     except Exception as e:
         log(f"[execute] MR 创建失败（不影响代码）：{e}")

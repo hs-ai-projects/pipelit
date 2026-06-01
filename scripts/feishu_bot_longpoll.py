@@ -170,7 +170,8 @@ def on_card_action(data) -> "P2CardActionTriggerResponse":
     """卡片按钮点击回调。立即返回 toast，重活异步交给 analyzer。"""
     try:
         body        = _to_dict(data)
-        action_val  = body.get("action", {}).get("value", {})
+        log(f"[card-action] raw body={json.dumps(body, ensure_ascii=False)[:500]}")
+        action_val  = body.get("event", {}).get("action", {}).get("value", {})
         action_type = action_val.get("action", "")
         task_id     = action_val.get("task_id", "")
 
