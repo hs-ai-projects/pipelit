@@ -15,6 +15,7 @@
   - 可单独 CLI 调用，方便本地测试
 
 用法：
+  python3 feishu_bot_analyzer.py check                   检查所有配置项是否完整
   python3 feishu_bot_analyzer.py pipeline  <task_id>     完整流程
   python3 feishu_bot_analyzer.py analyze   <task_id>     只分析，输出 JSON
   python3 feishu_bot_analyzer.py execute   <task_id>     读 pending 直接执行
@@ -36,8 +37,10 @@ import urllib.error
 PLUGIN_ROOT = pathlib.Path(
     os.environ.get("CLAUDE_PLUGIN_ROOT", pathlib.Path(__file__).parent.parent)
 )
-CACHE_DIR   = PLUGIN_ROOT / ".cache"
-PENDING_DIR = CACHE_DIR / "pending"    # 存待确认的需求分析
+CACHE_DIR        = PLUGIN_ROOT / ".cache"
+PENDING_DIR      = CACHE_DIR / "pending"         # 存待确认的需求分析
+ANALYZED_DIR     = CACHE_DIR / "analyzed"        # 防抖：记录每个 task 上次分析时间
+DEBOUNCE_SECONDS = int(os.environ.get("BOT_DEBOUNCE_SECONDS", 3600))  # 默认 1 小时
 
 # 复用 feishu_api 的配置路径（~/.claude/pipelit/config.json），跟 longpoll 对齐
 sys.path.insert(0, str(pathlib.Path(__file__).parent))
@@ -45,7 +48,7 @@ from feishu_api import read_config, USER_CONFIG_DIR
 LOG_DIR = USER_CONFIG_DIR / "webhook_logs"
 
 # claude --print 使用的模型，支持环境变量覆盖
-ANALYSIS_MODEL  = os.environ.get("BOT_ANALYSIS_MODEL",  "claude-haiku-4-5-20251001")
+ANALYSIS_MODEL  = os.environ.get("BOT_ANALYSIS_MODEL",  "claude-sonnet-4-6")
 EXECUTION_MODEL = os.environ.get("BOT_EXECUTION_MODEL", "claude-sonnet-4-6")
 
 
@@ -106,7 +109,7 @@ def _feishu_api(*args: str) -> dict:
     env    = {**os.environ, "CLAUDE_PLUGIN_ROOT": str(PLUGIN_ROOT)}
     r = subprocess.run(
         [sys.executable, script, *args],
-        capture_output=True, text=True, timeout=20, env=env,
+        capture_output=True, text=True, encoding='utf-8', timeout=20, env=env,
     )
     if r.returncode != 0:
         raise RuntimeError(r.stderr.strip() or "feishu_api error")
@@ -134,13 +137,14 @@ def send_message(chat_id: str, text: str) -> None:
 
 # ── Claude 调用 ────────────────────────────────────────────────────────────────
 
-def run_claude_api(prompt: str, model: str = ANALYSIS_MODEL, timeout: int = 60) -> str:
+def run_claude_api(prompt: str, model: str = ANALYSIS_MODEL, timeout: int = 60,
+                   image_paths: list[str] | None = None) -> str:
     """
     直接调用 Anthropic SDK，不走 claude CLI，避免 CLAUDE.md / skill 路由干扰。
-    用于 analyze 等只需要返回文本/JSON 的场景。
+    支持传入本地图片路径列表（vision），图片会 base64 编码后附在消息里。
     """
     try:
-        import anthropic
+        import anthropic, base64
     except ImportError:
         raise RuntimeError("请先安装：pip install anthropic")
 
@@ -148,12 +152,33 @@ def run_claude_api(prompt: str, model: str = ANALYSIS_MODEL, timeout: int = 60) 
     if not api_key:
         raise RuntimeError("环境变量 ANTHROPIC_API_KEY 未设置")
 
-    log(f"[claude-api] model={model} prompt_len={len(prompt)}")
+    # 构建 content：先放图片，再放文本
+    content: list = []
+    for img_path in (image_paths or []):
+        try:
+            p = pathlib.Path(img_path)
+            if not p.exists():
+                continue
+            suffix  = p.suffix.lower().lstrip(".")
+            media   = {"jpg": "image/jpeg", "jpeg": "image/jpeg",
+                       "png": "image/png", "gif": "image/gif",
+                       "webp": "image/webp"}.get(suffix, "image/png")
+            b64data = base64.standard_b64encode(p.read_bytes()).decode("utf-8")
+            content.append({
+                "type": "image",
+                "source": {"type": "base64", "media_type": media, "data": b64data},
+            })
+            log(f"[claude-api] attached image: {p.name} ({len(b64data)//1024}KB)")
+        except Exception as e:
+            log(f"[claude-api] skip image {img_path}: {e}")
+    content.append({"type": "text", "text": prompt})
+
+    log(f"[claude-api] model={model} prompt_len={len(prompt)} images={len(image_paths or [])}")
     client = anthropic.Anthropic(api_key=api_key, timeout=timeout)
     msg = client.messages.create(
         model=model,
         max_tokens=1024,
-        messages=[{"role": "user", "content": prompt}],
+        messages=[{"role": "user", "content": content}],
     )
     return msg.content[0].text
 
@@ -178,7 +203,7 @@ def run_claude(prompt: str, cwd: str, model: str = EXECUTION_MODEL,
             if os.path.isfile(candidate):
                 claude_bin = candidate
                 break
-    cmd = [claude_bin, "--print", prompt, "--model", model]
+    cmd = [claude_bin, "--print", prompt, "--model", model, "--no-plugins"]
     if dangerously_skip_permissions:
         cmd.append("--dangerously-skip-permissions")
     if system_prompt:
@@ -213,10 +238,15 @@ def parse_json_from_output(text: str) -> dict:
     m = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", text, re.DOTALL)
     if m:
         return json.loads(m.group(1))
-    # 再尝试找第一个完整 JSON 对象
-    m = re.search(r"\{.*\}", text, re.DOTALL)
-    if m:
-        return json.loads(m.group(0))
+    # 找第一个 { 开始位置，用 JSONDecoder 流式解析，只取第一个完整对象
+    decoder = json.JSONDecoder()
+    for i, ch in enumerate(text):
+        if ch == '{':
+            try:
+                obj, _ = decoder.raw_decode(text, i)
+                return obj
+            except json.JSONDecodeError:
+                continue
     raise ValueError(f"输出中未找到 JSON：{text[:200]}")
 
 
@@ -366,21 +396,16 @@ def _task_link(task_id: str) -> str:
     return f"https://applink.feishu.cn/client/todo/detail?guid={task_id}"
 
 
-def build_l3_card(task_id: str, summary: str, analysis: dict) -> dict:
-    """L3 复杂任务 — 橙色，仅报告，不含操作按钮。"""
-    plan_md = "\n".join(f"- {p}" for p in analysis.get("plan", []))
+def build_l1_card(task_id: str, summary: str, analysis: dict) -> dict:
+    """L1 低风险任务 — 绿色。"""
     return {
         "schema": "2.0",
         "header": {
-            "title":    {"tag": "plain_text", "content": "🔍 L3 复杂任务 · 建议人工拆分"},
-            "template": "orange",
+            "title":    {"tag": "plain_text", "content": f"✅ {summary}"},
+            "template": "green",
         },
         "body": {"elements": [
-            {"tag": "div", "text": {"tag": "lark_md", "content": (
-                f"**任务：** {summary}\n\n"
-                f"**判断原因：** {analysis.get('l3_reason', '')}\n\n"
-                f"**涉及范围：**\n{plan_md}"
-            )}},
+            {"tag": "div", "text": {"tag": "lark_md", "content": analysis.get("summary", "")}},
             {"tag": "hr"},
             {"tag": "button", "text": {"tag": "plain_text", "content": "查看任务"},
              "url": _task_link(task_id), "type": "default"},
@@ -388,26 +413,59 @@ def build_l3_card(task_id: str, summary: str, analysis: dict) -> dict:
     }
 
 
-def build_feature_confirm_card(task_id: str, summary: str, analysis: dict) -> dict:
-    """L2 需求 — 蓝色，含确认按钮，点击后才触发开发。"""
-    plan_md = "\n".join(f"- {p}" for p in analysis.get("plan", []))
+def build_l3_card(task_id: str, summary: str, analysis: dict) -> dict:
+    """L3 复杂任务 — 红色，建议人工拆分。"""
+    plan_lines = "\n".join(f"- {p}" for p in analysis.get("plan", []))
+    body_text  = f"{analysis.get('summary', '')}\n\n**涉及范围：**\n{plan_lines}" if plan_lines else analysis.get("summary", "")
     return {
         "schema": "2.0",
         "header": {
-            "title":    {"tag": "plain_text", "content": "📋 新需求待确认 · 点击开发"},
+            "title":    {"tag": "plain_text", "content": f"⚠️ {summary}"},
+            "template": "red",
+        },
+        "body": {"elements": [
+            {"tag": "div", "text": {"tag": "lark_md", "content": body_text}},
+            {"tag": "hr"},
+            {"tag": "button", "text": {"tag": "plain_text", "content": "查看任务"},
+             "url": _task_link(task_id), "type": "default"},
+        ]},
+    }
+
+
+def build_bug_card(task_id: str, summary: str, analysis: dict) -> dict:
+    """L2 Bug — 橙色。"""
+    plan_lines = "\n".join(f"`{p}`" if " → " in p else f"- {p}"
+                           for p in analysis.get("plan", []))
+    body_text  = f"{analysis.get('summary', '')}\n\n**改哪里：**\n{plan_lines}"
+    return {
+        "schema": "2.0",
+        "header": {
+            "title":    {"tag": "plain_text", "content": f"🐛 {summary}"},
+            "template": "orange",
+        },
+        "body": {"elements": [
+            {"tag": "div", "text": {"tag": "lark_md", "content": body_text}},
+            {"tag": "hr"},
+            {"tag": "button", "text": {"tag": "plain_text", "content": "查看任务"},
+             "url": _task_link(task_id), "type": "default"},
+        ]},
+    }
+
+
+def build_feature_card(task_id: str, summary: str, analysis: dict) -> dict:
+    """L2 需求 — 蓝色。"""
+    plan_lines = "\n".join(f"`{p}`" if " → " in p else f"- {p}"
+                           for p in analysis.get("plan", []))
+    body_text  = f"{analysis.get('summary', '')}\n\n**改哪里：**\n{plan_lines}"
+    return {
+        "schema": "2.0",
+        "header": {
+            "title":    {"tag": "plain_text", "content": f"📋 {summary}"},
             "template": "blue",
         },
         "body": {"elements": [
-            {"tag": "div", "text": {"tag": "lark_md", "content": (
-                f"**任务：** {summary}\n\n"
-                f"**摘要：** {analysis.get('summary', '')}\n\n"
-                f"**初步 Plan：**\n{plan_md}"
-            )}},
+            {"tag": "div", "text": {"tag": "lark_md", "content": body_text}},
             {"tag": "hr"},
-            {"tag": "button",
-             "text":  {"tag": "plain_text", "content": "✅ 确认开发"},
-             "type":  "primary",
-             "value": {"action": "confirm_dev", "task_id": task_id}},
             {"tag": "button", "text": {"tag": "plain_text", "content": "查看任务"},
              "url": _task_link(task_id), "type": "default"},
         ]},
@@ -473,6 +531,33 @@ def build_error_card(task_id: str, summary: str, error: str) -> dict:
     }
 
 
+# ── 防抖（同一任务短时间内不重复分析）──────────────────────────────────────────────
+
+def _is_debounced(task_id: str) -> bool:
+    """返回 True 表示该任务在防抖窗口内已分析过，应跳过。"""
+    path = ANALYZED_DIR / f"{task_id}.json"
+    if not path.exists():
+        return False
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        elapsed = time.time() - data.get("analyzed_at", 0)
+        if elapsed < DEBOUNCE_SECONDS:
+            log(f"[debounce] task={task_id[:8]} 距上次分析 {int(elapsed)}s < {DEBOUNCE_SECONDS}s，跳过")
+            return True
+    except Exception:
+        pass
+    return False
+
+
+def _mark_analyzed(task_id: str) -> None:
+    """记录任务分析时间，用于防抖判断。"""
+    ANALYZED_DIR.mkdir(parents=True, exist_ok=True)
+    (ANALYZED_DIR / f"{task_id}.json").write_text(
+        json.dumps({"task_id": task_id, "analyzed_at": time.time()}, ensure_ascii=False),
+        encoding="utf-8"
+    )
+
+
 # ── Pending 存储（L2 需求确认缓存）─────────────────────────────────────────────
 
 def save_pending(task_id: str, task_data: dict, analysis: dict) -> None:
@@ -507,54 +592,175 @@ def clear_pending(task_id: str) -> None:
 
 # ── 核心流程 ───────────────────────────────────────────────────────────────────
 
+def _collect_code_context(title: str, description: str, cfg: dict, global_cfg: dict) -> str:
+    """
+    收集代码上下文供 Claude API 分析使用：文件树 + 关键词 grep。
+    完全在 Python 侧执行，不依赖 claude 工具调用。
+    """
+    import re
+
+    # 收集所有项目路径
+    paths: list[tuple[str, str]] = []
+    seen_paths: set = set()
+    for key, label in [("project_path", "bot_project")]:
+        p = cfg.get(key, "")
+        if p and p not in seen_paths and pathlib.Path(p).exists():
+            paths.append((label, p)); seen_paths.add(p)
+    for key, label in [("frontend_path", "frontend"), ("backend_path", "backend")]:
+        p = global_cfg.get(key, "")
+        if p and p not in seen_paths and pathlib.Path(p).exists():
+            paths.append((label, p)); seen_paths.add(p)
+
+    if not paths:
+        return "（未配置项目路径）"
+
+    # 提取关键词
+    text = f"{title} {description}"
+    en_kws = [w for w in re.findall(r'[a-zA-Z][a-zA-Z0-9_]{2,}', text)
+              if w.lower() not in {'the','and','for','with','that','this','bug','fix','task'}]
+    zh_stop = {'修复','修改','更新','优化','处理','实现','添加','删除','解决','问题','任务','需要','完成'}
+    zh_kws  = [w for w in re.findall(r'[\u4e00-\u9fa5]{2,6}', text) if w not in zh_stop]
+    ui_map  = {'导航栏':['nav','navbar','sidebar'],'导航':['nav','navbar'],'字体':['font','color','style'],
+               '颜色':['color','theme'],'样式':['style','css'],'按钮':['button','btn'],
+               '弹窗':['modal','dialog'],'表格':['table'],'搜索':['search']}
+    extra = []
+    for zh, en_list in ui_map.items():
+        if zh in text: extra += en_list
+    keywords = list(dict.fromkeys(en_kws[:5] + zh_kws[:3] + extra))[:10]
+
+    blocks = []
+    for label, project_path in paths:
+        # 文件树（前2层）
+        try:
+            r = subprocess.run(["git","ls-tree","-r","--name-only","HEAD"],
+                cwd=project_path, capture_output=True, text=True, encoding="utf-8", timeout=8)
+            files = r.stdout.strip().splitlines() if r.returncode == 0 else []
+            tree  = "\n".join(sorted({"/".join(f.split("/")[:2]) for f in files})[:50])
+        except Exception:
+            tree = "（读取失败）"
+
+        # grep 关键词
+        hits: dict[str, list[str]] = {}
+        for kw in keywords[:6]:
+            try:
+                r = subprocess.run(["git","grep","-n","-i","--max-count=3", kw],
+                    cwd=project_path, capture_output=True, text=True, encoding="utf-8", timeout=6)
+                for line in r.stdout.strip().splitlines()[:15]:
+                    parts = line.split(":", 2)
+                    if len(parts) == 3:
+                        hits.setdefault(parts[0], []).append(f"  L{parts[1]}: {parts[2][:100]}")
+            except Exception:
+                continue
+
+        grep_text = ""
+        if hits:
+            grep_lines = ["\n【grep 命中】"]
+            total = 0
+            for fp, lines in list(hits.items())[:10]:
+                block = f"\n▶ {fp}\n" + "\n".join(lines[:5])
+                if total + len(block) > 3000: break
+                grep_lines.append(block); total += len(block)
+            grep_text = "\n".join(grep_lines)
+        else:
+            grep_text = "\n【grep 命中】（关键词未命中，根据文件结构和任务描述判断）"
+
+        blocks.append(f"=== [{label}] {project_path} ===\n【文件结构】\n{tree}{grep_text}")
+
+    return "\n\n".join(blocks)
+
+
 def analyze(task_id: str) -> tuple[dict, dict]:
     """
-    拉取任务全文，调用 claude --print 分析，返回 (task_data, analysis)。
+    调用本地 claude --print，让 claude 作为 agent 自主读取代码库，精确分级。
+
+    与之前 API 调用的区别：
+    - claude 有 Bash/Read/Grep 工具，能自主 grep、读文件，不依赖我们手动喂数据
+    - 分析质量对标 feishu-dev skill
+    - 不需要 ANTHROPIC_API_KEY，用本地已登录账号
 
     analysis 结构：
       {
-        "level":     "L2" | "L3",
-        "type":      "bug" | "feature",
+        "level":     "L1" | "L2" | "L3",
+        "type":      "bug" | "feature" | "docs",
         "summary":   "一句话概括",
-        "plan":      ["改动点1", "改动点2"],
-        "l3_reason": "若L3说明原因"
+        "plan":      ["具体改动点1（含文件路径）", "改动点2"],
+        "reason":    "分级理由（引用具体文件/行号）"
       }
-
-    分析用 haiku 模型（快 + 便宜），只需要分类不需要写代码。
     """
     log(f"[analyze] task_id={task_id}")
-    task_data  = _feishu_api("get_task_full", task_id)
-    task       = task_data["task"]
+    task_data = _feishu_api("get_task_full", task_id)
+    task      = task_data["task"]
 
     comments_text = "\n".join(
         f"- {c.get('content', '')}" for c in task.get("comments", [])
     ) or "（无评论）"
 
-    prompt = f"""你是一个任务分类器。分析以下飞书任务，仅返回 JSON，不要其他内容。
+    title       = task["summary"]
+    description = task.get("description", "")
 
-任务标题：{task['summary']}
-任务描述：{task.get('description', '（无描述）')}
+    # 任务附件图片（get_task_full 已自动下载到本地）
+    image_paths = [img["path"] for img in task_data.get("images", []) if img.get("path")]
+    if image_paths:
+        log(f"[analyze] found {len(image_paths)} attachment(s)")
+
+    # 收集项目路径，告知 claude 在哪里读代码
+    cfg        = bot_cfg()
+    global_cfg = read_config() or {}
+    paths_info = []
+    for key in ("project_path",):
+        p = cfg.get(key, "")
+        if p and pathlib.Path(p).exists():
+            paths_info.append(f"- bot_project: {p}")
+    for key, label in (("frontend_path", "frontend"), ("backend_path", "backend")):
+        p = global_cfg.get(key, "")
+        if p and pathlib.Path(p).exists():
+            paths_info.append(f"- {label}: {p}")
+    # 去重
+    seen: set = set()
+    unique_paths_info = []
+    for line in paths_info:
+        p = line.split(": ", 1)[-1]
+        if p not in seen:
+            seen.add(p)
+            unique_paths_info.append(line)
+
+    # ── 收集代码上下文（自己 grep，不依赖 claude 工具调用）─────────────────────
+    code_context = _collect_code_context(title, description, cfg, global_cfg)
+
+    prompt = f"""你是一个研发任务分级器。根据飞书任务内容和下方已提取的代码上下文，判断任务级别，仅返回 JSON，不要其他内容。
+
+## 任务信息
+
+标题：{title}
+描述：{description or '（无描述）'}
 评论：
 {comments_text}
 
-返回格式（严格 JSON）：
+## 代码库上下文（已提前 grep 提取）
+
+{code_context}
+
+## 返回格式（严格 JSON）
+
 {{
-  "level":     "L2" 或 "L3",
-  "type":      "bug" 或 "feature",
-  "summary":   "一句话概括要做什么",
-  "plan":      ["具体改动点1", "具体改动点2"],
-  "l3_reason": "若为L3说明原因，否则空字符串"
+  "level":   "L1" 或 "L2" 或 "L3",
+  "type":    "bug" 或 "feature" 或 "docs",
+  "summary": "动词+宾语，10字以内（如：campaign列表按规则置顶）",
+  "plan":    ["src/pages/Foo.vue → 列表渲染前按 has_rule 排序", "改动点2，同格式"],
+  "reason":  "分级理由，引用具体文件名"
 }}
 
-L3 判断（满足任一即为 L3）：
-- 需要修改 5 个以上文件
-- 涉及架构调整或多模块重构
-- bug 根因不明，影响范围不确定
-- 描述极度模糊，无法确定具体改动
+## 分级规则
 
-bug 判断：标题/描述含"报错"、"异常"、"不生效"、"修复"、"fix"、"bug"、"问题"、"错误"视为 bug。"""
+**判断原则：优先从任务意图判断，代码上下文作为辅助，grep 未命中 ≠ L3。**
 
-    output   = run_claude_api(prompt, model=ANALYSIS_MODEL, timeout=60)
+**L1**：纯文档/配置/版本号，不改业务逻辑和接口
+**L2**：改动范围清晰，能列出具体文件，≤5个文件。典型：改样式、修单个 bug、调整接口逻辑
+**L3**：架构调整/模块重构/跨三层改动/改动文件>5个/任务本身极度模糊"""
+
+    log(f"[analyze] calling claude api")
+    output   = run_claude_api(prompt, model=ANALYSIS_MODEL, timeout=90,
+                              image_paths=image_paths if image_paths else None)
     analysis = parse_json_from_output(output)
     log(f"[analyze] result={json.dumps(analysis, ensure_ascii=False)}")
     return task_data, analysis
@@ -662,10 +868,13 @@ def pipeline(task_id: str) -> None:
     """
     完整流程入口，由 webhook 在后台线程中调用。
 
-    L3  → 发分析报告卡片
-    L2 feature → 发确认卡片（用户点击后触发 execute）
-    L2 bug     → 直接 execute → 发结果卡片
+    L1  → 发通知卡片（低风险，纯文档/配置）
+    L3  → 发分析报告卡片（复杂任务，不执行）
+    L2  → 发分析确认卡片（所有 L2 都需要用户点击确认后才执行）
     """
+    # if _is_debounced(task_id):
+    #     return
+
     cfg     = bot_cfg()
     chat_id = cfg["notify_chat_id"]
 
@@ -675,6 +884,11 @@ def pipeline(task_id: str) -> None:
     try:
         task_data, analysis = analyze(task_id)
     except Exception as e:
+        err = str(e)
+        # 无权限读取任务（Bot 不是该任务的成员），静默跳过，不打扰群聊
+        if "1470403" in err or "unauthorized" in err.lower():
+            log(f"[pipeline] no permission to read task {task_id[:8]}, skip")
+            return
         log(f"[pipeline] analyze failed: {e}")
         send_message(chat_id, f"❌ 任务分析失败：{e}")
         return
@@ -684,23 +898,22 @@ def pipeline(task_id: str) -> None:
     level   = analysis.get("level", "L2")
     t_type  = analysis.get("type", "bug")
 
+    # 分析成功，记录时间（防抖从此刻开始计）
+    _mark_analyzed(task_id)
+
+    if level == "L1":
+        send_card(chat_id, build_l1_card(task_id, summary, analysis))
+        return
+
     if level == "L3":
         send_card(chat_id, build_l3_card(task_id, summary, analysis))
         return
 
-    if t_type == "feature":
-        # 保存分析结果，等用户确认
-        save_pending(task_id, task_data, analysis)
-        send_card(chat_id, build_feature_confirm_card(task_id, summary, analysis))
-        return
-
-    # L2 Bug：全自动执行
-    try:
-        result = execute(task_id, task_data, analysis)
-        send_card(chat_id, build_result_card(task_id, summary, result, "bug"))
-    except Exception as e:
-        log(f"[pipeline] execute failed: {e}")
-        send_card(chat_id, build_error_card(task_id, summary, str(e)))
+    # L2：纯分析展示，无操作按钮
+    if t_type == "bug":
+        send_card(chat_id, build_bug_card(task_id, summary, analysis))
+    else:
+        send_card(chat_id, build_feature_card(task_id, summary, analysis))
 
 
 def execute_from_pending(task_id: str) -> None:
@@ -734,8 +947,148 @@ def execute_from_pending(task_id: str) -> None:
 
 # ── CLI 入口（方便本地测试）────────────────────────────────────────────────────
 
+def check_config() -> None:
+    """检查所有配置项是否完整，逐项输出 OK / MISSING / WARN。"""
+    OK      = "  [OK]    "
+    MISSING = "  [MISSING]"
+    WARN    = "  [WARN]  "
+
+    errors = 0
+
+    def ok(label: str, value: str = "") -> None:
+        suffix = f" = {value}" if value else ""
+        print(f"{OK} {label}{suffix}")
+
+    def missing(label: str, hint: str = "") -> None:
+        nonlocal errors
+        errors += 1
+        suffix = f"  → {hint}" if hint else ""
+        print(f"{MISSING} {label}{suffix}")
+
+    def warn(label: str, hint: str = "") -> None:
+        suffix = f"  → {hint}" if hint else ""
+        print(f"{WARN} {label}{suffix}")
+
+    print("\n=== Pipelit 配置检查 ===\n")
+
+    # ── 1. config.json ───────────────────────────────────────────────────────
+    print("[ config.json ]")
+    cfg = read_config() or {}
+
+    for field in ("app_id", "app_secret"):
+        if cfg.get(field):
+            ok(field, cfg[field][:8] + "...")
+        else:
+            missing(field, "运行 feishu_api.py save_config <App_ID> <App_Secret>")
+
+    if cfg.get("user_id"):
+        ok("user_id", cfg["user_id"])
+    else:
+        warn("user_id 未设置", "运行 feishu_api.py save_user 获取")
+
+    # ── 2. bot 配置 ──────────────────────────────────────────────────────────
+    print("\n[ config.json → bot ]")
+    bot = cfg.get("bot", {})
+
+    if bot.get("notify_chat_id") or os.environ.get("BOT_NOTIFY_CHAT"):
+        ok("notify_chat_id", (bot.get("notify_chat_id") or os.environ.get("BOT_NOTIFY_CHAT", ""))[:12] + "...")
+    else:
+        missing("notify_chat_id", "卡片通知无法发送；运行 feishu_bot_webhook.py setup")
+
+    if bot.get("project_path") or os.environ.get("BOT_PROJECT_PATH"):
+        path = bot.get("project_path") or os.environ.get("BOT_PROJECT_PATH", "")
+        exists = pathlib.Path(path).exists()
+        if exists:
+            ok("project_path", path)
+        else:
+            warn("project_path 路径不存在", path)
+    else:
+        missing("project_path", "自动执行代码时必须；运行 feishu_bot_webhook.py setup")
+
+    user_id = bot.get("user_id") or cfg.get("user_id", "")
+    if user_id:
+        ok("bot.user_id", user_id)
+    else:
+        warn("bot.user_id 未设置", "任务过滤将失效（所有任务都会触发）")
+
+    trigger_mode = bot.get("trigger_mode", "notify")
+    ok("trigger_mode", trigger_mode)
+
+    trigger_events = bot.get("trigger_events", [])
+    if trigger_events:
+        ok("trigger_events", ", ".join(trigger_events))
+    else:
+        warn("trigger_events 为空", "不会触发任何事件")
+
+    # ── 3. 环境变量 ──────────────────────────────────────────────────────────
+    print("\n[ 环境变量 ]")
+
+    if os.environ.get("ANTHROPIC_API_KEY"):
+        key = os.environ["ANTHROPIC_API_KEY"]
+        ok("ANTHROPIC_API_KEY", key[:8] + "..." + key[-4:])
+    else:
+        missing("ANTHROPIC_API_KEY", "Claude 分析无法运行；在系统环境变量或 .env 中设置")
+
+    gitlab_token = os.environ.get("GITLAB_TOKEN") or bot.get("gitlab_token", "")
+    github_token = os.environ.get("GITHUB_TOKEN") or bot.get("github_token", "")
+    if gitlab_token:
+        ok("GITLAB_TOKEN", gitlab_token[:8] + "...")
+    elif github_token:
+        ok("GITHUB_TOKEN", github_token[:8] + "...")
+    else:
+        warn("GITLAB_TOKEN / GITHUB_TOKEN 均未设置", "自动创建 MR/PR 将失败")
+
+    # claude 命令
+    claude_bin = os.environ.get("CLAUDE_BIN", "claude")
+    found = False
+    for candidate in [claude_bin, r"D:\node\nodejs\claude.cmd", r"D:\node\nodejs\claude",
+                      "/usr/local/bin/claude"]:
+        if pathlib.Path(candidate).is_file():
+            ok("claude 命令", candidate)
+            found = True
+            break
+    if not found:
+        try:
+            import shutil
+            path = shutil.which("claude")
+            if path:
+                ok("claude 命令", path)
+                found = True
+        except Exception:
+            pass
+    if not found:
+        warn("claude 命令未找到", "execute 模式将失败；npm install -g @anthropic-ai/claude-code")
+
+    # anthropic SDK
+    print("\n[ Python 依赖 ]")
+    try:
+        import anthropic
+        ok("anthropic SDK")
+    except ImportError:
+        missing("anthropic SDK", "pip install anthropic")
+
+    try:
+        import lark
+        ok("lark-oapi SDK (长连接)")
+    except ImportError:
+        warn("lark-oapi 未安装", "长连接模式无法使用；pip install lark-oapi")
+
+    # ── 结果 ─────────────────────────────────────────────────────────────────
+    print(f"\n{'='*30}")
+    if errors == 0:
+        print("✓ 所有必填配置已就绪")
+    else:
+        print(f"✗ 发现 {errors} 个必填项缺失，请按提示补充后重试")
+    print()
+
+
 def main() -> None:
     args = sys.argv[1:]
+
+    if not args or args[0] == "check":
+        check_config()
+        return
+
     if len(args) < 2:
         print(__doc__)
         sys.exit(1)

@@ -102,12 +102,37 @@ def _process_task_event(event_type: str, body: dict) -> None:
             if "task_created" not in trigger_events:
                 log("[event] task_created not in trigger_events, skip")
                 return
+            if my_user_id and not is_assigned_to_me(body, my_user_id):
+                log("[event] task_created but not assigned to me, skip")
+                return
 
         elif "task_user_access" in event_type:
-            # 用户维度事件，飞书已过滤，无需再检查 is_assigned_to_me
             if "task_assigned" not in trigger_events:
                 log("[event] task_assigned not in trigger_events, skip")
                 return
+            # event_types 列出了本次变更的类型，只在指派相关时触发
+            event  = body.get("event", {})
+            changed = set(event.get("event_types", []))
+            log(f"[event] task_user_access event_types={changed}")
+            trigger_types = {"task_create", "task_assignees_update"}
+            if not changed & trigger_types:
+                log(f"[event] task_user_access skip (no assignee change)")
+                return
+            # 调接口确认当前用户是否仍是负责人（过滤"被移出"场景）
+            if my_user_id:
+                try:
+                    from feishu_api import get_token, http as feishu_http
+                    token  = get_token()
+                    result = feishu_http("GET",
+                        f"/open-apis/task/v2/tasks/{task_id}?user_id_type=user_id",
+                        token=token)
+                    members = result.get("data", {}).get("task", {}).get("members", [])
+                    assignees = {m.get("id") for m in members if m.get("role") == "assignee"}
+                    if my_user_id not in assignees:
+                        log(f"[event] user not current assignee, skip")
+                        return
+                except Exception as e:
+                    log(f"[event] failed to verify assignee: {e}, proceeding anyway")
 
         elif "task_updated" in event_type:
             if "task_assigned" not in trigger_events:
