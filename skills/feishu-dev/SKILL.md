@@ -118,6 +118,12 @@ PYTHONIOENCODING=utf-8 python3 "${CLAUDE_PLUGIN_ROOT}/scripts/feishu_api.py" get
 涉及范围:
   <可能相关的模块/文件>
 
+（若 log_summary 不为 null，插入以下节）
+━━ 🔍 观测云 Log 佐证 ━━
+<log_summary 内容>
+结合日志结论: <log 数据对上述定位的印证或修正>
+━━━━━━━━━━━━━━━━━━━━━━
+
 建议拆分:
   1. <子任务1>
   2. <子任务2>
@@ -158,6 +164,66 @@ PYTHONIOENCODING=utf-8 python3 "${CLAUDE_PLUGIN_ROOT}/scripts/feishu_api.py" get
 
 ---
 
+### 1.8 Bug 日志辅助（仅 bug 任务触发）
+
+#### 1.8a 判断是否为 bug 任务
+
+读完任务（含图片、附件）后，**语义判断**任务意图是否为"某个功能出了问题需要排查"。
+
+包括但不限于：功能异常、用户投诉、页面报错、数据不对、接口失败、体验问题、性能异常等。不依赖关键词匹配，以任务整体意图为准。
+
+**判断为 bug 任务** → 继续 1.8b。**否则跳过整个 1.8**。
+
+#### 1.8b 代码接口预定位
+
+结合 1.7 已定位的目标文件及任务描述，在前端项目目录 grep API 调用，找候选接口路径：
+
+```bash
+# 搜索 api 目录下与功能模块相关的接口定义
+grep -rn "url\|path\|api" <frontend_path>/src/api --include="*.ts" | grep -i "<功能关键词>"
+```
+
+读取命中文件，提取与当前 bug 功能模块语义匹配的接口路径前缀，得到候选列表（可为空数组）。
+
+#### 1.8c 时间推断
+
+综合以下信息语义推断 bug 发生时间点（优先级从高到低）：
+
+1. 任务描述里的时间线索（"今天下午两点"、"刚才"、"昨晚"、"上午十点左右"等）
+2. 截图里可见的时间信息（系统时间栏、日志时间戳、界面上的时间）
+3. fallback：`task.created_at`（任务创建时间）
+
+时间窗口由 Claude 根据线索灵活判断：
+- "刚才" / "刚刚" → 往前 30 分钟
+- "今天上午" / "今天下午" → 往前 4 小时
+- 具体时间点 → 往前 1 小时
+- 无任何线索（fallback） → 往前 1 小时
+
+记录：
+- `bug_start`：推断时间点 - 窗口
+- `bug_end`：推断时间点 + 15 分钟
+
+#### 1.8d 调用观测云查询
+
+invoke guance-log-analysis，prompt 包含：
+
+```
+GUANCE_SILENT_MODE
+start: <bug_start>
+end: <bug_end>
+interfaces: [<候选接口路径前缀列表，可为空>]
+```
+
+记录返回结果到 `log_summary`：
+
+| guance 返回 | log_summary 值 |
+|-------------|---------------|
+| 精简摘要内容 | 摘要原文 |
+| `GUANCE_NOT_CONFIGURED` | `"⚠️ 观测云未配置，跳过日志分析"` |
+| `GUANCE_ERROR:*` / 无数据 | `null`（静默跳过，不展示） |
+
+---
+
 ## Phase 2：Plan（用户确认）
 
 ```
@@ -173,6 +239,9 @@ PYTHONIOENCODING=utf-8 python3 "${CLAUDE_PLUGIN_ROOT}/scripts/feishu_api.py" get
 
 不动:
   ✗ <相邻不改的功能>
+
+（若 log_summary 不为 null，在此处追加观测云日志摘要）
+<log_summary 内容>
 
 确认后自动执行 →
 ━━━━━━━━━━━━━━━
