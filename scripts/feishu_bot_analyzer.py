@@ -203,7 +203,7 @@ def run_claude(prompt: str, cwd: str, model: str = EXECUTION_MODEL,
             if os.path.isfile(candidate):
                 claude_bin = candidate
                 break
-    cmd = [claude_bin, "--print", prompt, "--model", model, "--no-plugins"]
+    cmd = [claude_bin, "--print", prompt, "--model", model]
     if dangerously_skip_permissions:
         cmd.append("--dangerously-skip-permissions")
     if system_prompt:
@@ -211,22 +211,43 @@ def run_claude(prompt: str, cwd: str, model: str = EXECUTION_MODEL,
 
     log(f"[claude] model={model} cwd={cwd} prompt_len={len(prompt)}")
     try:
-        r = subprocess.run(
-            cmd, cwd=cwd,
-            capture_output=True, text=True, encoding='utf-8',
-            timeout=timeout, env=env,
+        proc = subprocess.Popen(
+            cmd, cwd=cwd, env=env,
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            text=True, encoding='utf-8',
         )
     except FileNotFoundError:
         raise RuntimeError(
             "claude 命令未找到。请先安装：npm install -g @anthropic-ai/claude-code"
         )
+
+    import threading
+    stdout_lines: list[str] = []
+    stderr_lines: list[str] = []
+
+    def _read(pipe, buf, prefix):
+        for line in iter(pipe.readline, ""):
+            buf.append(line)
+            log(f"[claude:{prefix}] {line.rstrip()}")
+        pipe.close()
+
+    t_out = threading.Thread(target=_read, args=(proc.stdout, stdout_lines, "out"), daemon=True)
+    t_err = threading.Thread(target=_read, args=(proc.stderr, stderr_lines, "err"), daemon=True)
+    t_out.start(); t_err.start()
+
+    try:
+        proc.wait(timeout=timeout)
     except subprocess.TimeoutExpired:
+        proc.kill()
         raise RuntimeError(f"claude 超时（>{timeout}s），任务可能过于复杂")
 
-    if r.returncode != 0:
-        raise RuntimeError(f"claude 退出码 {r.returncode}：{r.stderr[:300]}")
+    t_out.join(); t_err.join()
 
-    return r.stdout
+    if proc.returncode != 0:
+        stderr_text = "".join(stderr_lines)[:300]
+        raise RuntimeError(f"claude 退出码 {proc.returncode}：{stderr_text}")
+
+    return "".join(stdout_lines)
 
 
 def parse_json_from_output(text: str) -> dict:
@@ -396,19 +417,48 @@ def _task_link(task_id: str) -> str:
     return f"https://applink.feishu.cn/client/todo/detail?guid={task_id}"
 
 
+def _btn(text: str, action: str, task_id: str, btn_type: str = "default") -> dict:
+    return {"tag": "button", "text": {"tag": "plain_text", "content": text},
+            "type": btn_type, "value": {"action": action, "task_id": task_id}}
+
+
+def _btn_url(text: str, url: str) -> dict:
+    return {"tag": "button", "text": {"tag": "plain_text", "content": text},
+            "type": "default", "url": url}
+
+
+def _horizontal_buttons(*buttons) -> dict:
+    """把多个按钮包进 column_set，实现横向排列。"""
+    return {
+        "tag": "column_set",
+        "flex_mode": "none",
+        "horizontal_spacing": "8px",
+        "columns": [
+            {"tag": "column", "width": "auto", "elements": [btn]}
+            for btn in buttons
+        ],
+    }
+
+
+def _common_actions(task_id: str, confirm: bool = False) -> dict:
+    """所有卡片通用底部操作行：（确认开发）+ 分析有误 + 查看任务。"""
+    buttons = []
+    if confirm:
+        buttons.append(_btn("✅ 确认开发", "confirm_dev", task_id, "primary"))
+    buttons.append(_btn("✏️ 分析有误", "request_feedback", task_id))
+    buttons.append(_btn_url("查看任务", _task_link(task_id)))
+    return _horizontal_buttons(*buttons)
+
+
 def build_l1_card(task_id: str, summary: str, analysis: dict) -> dict:
     """L1 低风险任务 — 绿色。"""
     return {
         "schema": "2.0",
-        "header": {
-            "title":    {"tag": "plain_text", "content": f"✅ {summary}"},
-            "template": "green",
-        },
+        "header": {"title": {"tag": "plain_text", "content": f"✅ {summary}"}, "template": "green"},
         "body": {"elements": [
             {"tag": "div", "text": {"tag": "lark_md", "content": analysis.get("summary", "")}},
             {"tag": "hr"},
-            {"tag": "button", "text": {"tag": "plain_text", "content": "查看任务"},
-             "url": _task_link(task_id), "type": "default"},
+            _common_actions(task_id, confirm=False),
         ]},
     }
 
@@ -419,15 +469,11 @@ def build_l3_card(task_id: str, summary: str, analysis: dict) -> dict:
     body_text  = f"{analysis.get('summary', '')}\n\n**涉及范围：**\n{plan_lines}" if plan_lines else analysis.get("summary", "")
     return {
         "schema": "2.0",
-        "header": {
-            "title":    {"tag": "plain_text", "content": f"⚠️ {summary}"},
-            "template": "red",
-        },
+        "header": {"title": {"tag": "plain_text", "content": f"⚠️ {summary}"}, "template": "red"},
         "body": {"elements": [
             {"tag": "div", "text": {"tag": "lark_md", "content": body_text}},
             {"tag": "hr"},
-            {"tag": "button", "text": {"tag": "plain_text", "content": "查看任务"},
-             "url": _task_link(task_id), "type": "default"},
+            _common_actions(task_id, confirm=False),
         ]},
     }
 
@@ -439,15 +485,11 @@ def build_bug_card(task_id: str, summary: str, analysis: dict) -> dict:
     body_text  = f"{analysis.get('summary', '')}\n\n**改哪里：**\n{plan_lines}"
     return {
         "schema": "2.0",
-        "header": {
-            "title":    {"tag": "plain_text", "content": f"🐛 {summary}"},
-            "template": "orange",
-        },
+        "header": {"title": {"tag": "plain_text", "content": f"🐛 {summary}"}, "template": "orange"},
         "body": {"elements": [
             {"tag": "div", "text": {"tag": "lark_md", "content": body_text}},
             {"tag": "hr"},
-            {"tag": "button", "text": {"tag": "plain_text", "content": "查看任务"},
-             "url": _task_link(task_id), "type": "default"},
+            _common_actions(task_id, confirm=True),
         ]},
     }
 
@@ -459,15 +501,35 @@ def build_feature_card(task_id: str, summary: str, analysis: dict) -> dict:
     body_text  = f"{analysis.get('summary', '')}\n\n**改哪里：**\n{plan_lines}"
     return {
         "schema": "2.0",
-        "header": {
-            "title":    {"tag": "plain_text", "content": f"📋 {summary}"},
-            "template": "blue",
-        },
+        "header": {"title": {"tag": "plain_text", "content": f"📋 {summary}"}, "template": "blue"},
         "body": {"elements": [
             {"tag": "div", "text": {"tag": "lark_md", "content": body_text}},
             {"tag": "hr"},
-            {"tag": "button", "text": {"tag": "plain_text", "content": "查看任务"},
-             "url": _task_link(task_id), "type": "default"},
+            _common_actions(task_id, confirm=True),
+        ]},
+    }
+
+
+def build_feedback_input_card(task_id: str, summary: str) -> dict:
+    """反馈输入卡片 — 点击"分析有误"后展示，含文字输入框。"""
+    return {
+        "schema": "2.0",
+        "header": {
+            "title":    {"tag": "plain_text", "content": f"✏️ {summary}"},
+            "template": "grey",
+        },
+        "body": {"elements": [
+            {"tag": "div", "text": {"tag": "lark_md",
+             "content": "分析哪里有问题？补充说明后重新分析："}},
+            {"tag": "input",
+             "name":        "feedback",
+             "placeholder": {"tag": "plain_text", "content": "如：应该是前端问题，不涉及后端..."},
+             "width": "fill"},
+            {"tag": "hr"},
+            _horizontal_buttons(
+                _btn("🔄 提交，重新分析", "submit_feedback", task_id, "primary"),
+                _btn_url("查看任务", _task_link(task_id)),
+            ),
         ]},
     }
 
@@ -669,7 +731,7 @@ def _collect_code_context(title: str, description: str, cfg: dict, global_cfg: d
     return "\n\n".join(blocks)
 
 
-def analyze(task_id: str) -> tuple[dict, dict]:
+def analyze(task_id: str, user_feedback: str = "") -> tuple[dict, dict]:
     """
     调用本地 claude --print，让 claude 作为 agent 自主读取代码库，精确分级。
 
@@ -757,6 +819,10 @@ def analyze(task_id: str) -> tuple[dict, dict]:
 **L1**：纯文档/配置/版本号，不改业务逻辑和接口
 **L2**：改动范围清晰，能列出具体文件，≤5个文件。典型：改样式、修单个 bug、调整接口逻辑
 **L3**：架构调整/模块重构/跨三层改动/改动文件>5个/任务本身极度模糊"""
+
+    # 有用户反馈时附加到 prompt 末尾
+    if user_feedback:
+        prompt += f"\n\n## 用户反馈（上次分析有误，请重点参考）\n\n{user_feedback}"
 
     log(f"[analyze] calling claude api")
     output   = run_claude_api(prompt, model=ANALYSIS_MODEL, timeout=90,
@@ -909,7 +975,8 @@ def pipeline(task_id: str) -> None:
         send_card(chat_id, build_l3_card(task_id, summary, analysis))
         return
 
-    # L2：纯分析展示，无操作按钮
+    # L2：保存分析结果供"确认开发"按钮使用，再发卡片
+    save_pending(task_id, task_data, analysis)
     if t_type == "bug":
         send_card(chat_id, build_bug_card(task_id, summary, analysis))
     else:
@@ -918,31 +985,168 @@ def pipeline(task_id: str) -> None:
 
 def execute_from_pending(task_id: str) -> None:
     """
-    处理"需求确认"按钮点击，由 webhook card-action 回调触发。
-    从 pending 缓存读取之前的分析结果，直接执行。
+    处理"确认开发"按钮点击，调用 feishu-dev skill 完成编码。
     """
     cfg     = bot_cfg()
     chat_id = cfg["notify_chat_id"]
 
     pending = load_pending(task_id)
     if not pending:
-        send_message(chat_id,
-                     f"⚠️ 未找到任务 {task_id[:8]} 的待确认记录（可能已过期），请手动处理。")
+        # 没有 pending 说明是 L1 或 L3 点击了确认，直接用 task_id 触发
+        send_message(chat_id, f"🚀 正在调用 feishu-dev 处理任务...")
+        try:
+            result = _run_feishu_dev(task_id)
+            send_card(chat_id, build_result_card(task_id, task_id[:8], result, "feature"))
+        except Exception as e:
+            log(f"[execute_from_pending] failed: {e}")
+            send_message(chat_id, f"❌ 执行失败：{e}")
         return
 
     task_data = pending["task"]
     analysis  = pending["analysis"]
     summary   = task_data["task"]["summary"]
 
-    send_message(chat_id, f"🚀 开始实现需求：{summary}")
+    log(f"[execute] task={task_id} level={analysis.get('level')} type={analysis.get('type')}")
+    log(f"[execute] plan={analysis.get('plan')}")
+    send_message(chat_id, f"🚀 开始实现：{summary}\n正在调用 feishu-dev，预计需要几分钟...")
 
     try:
-        result = execute(task_id, task_data, analysis)
+        result = _run_feishu_dev(task_id, task_data=task_data, analysis=analysis)
         clear_pending(task_id)
-        send_card(chat_id, build_result_card(task_id, summary, result, "feature"))
+        send_card(chat_id, build_result_card(task_id, summary, result, analysis.get("type", "feature")))
     except Exception as e:
         log(f"[execute_from_pending] failed: {e}")
         send_card(chat_id, build_error_card(task_id, summary, str(e)))
+
+
+def show_feedback_input(task_id: str) -> None:
+    """用户点击"分析有误"后，发送反馈输入卡片。"""
+    cfg     = bot_cfg()
+    chat_id = cfg["notify_chat_id"]
+    pending = load_pending(task_id)
+    summary = pending["task"]["task"]["summary"] if pending else task_id[:8]
+    send_card(chat_id, build_feedback_input_card(task_id, summary))
+
+
+def reanalyze_with_feedback(task_id: str, feedback: str) -> None:
+    """收到用户反馈后重新分析，发新的分析卡片。"""
+    cfg     = bot_cfg()
+    chat_id = cfg["notify_chat_id"]
+
+    log(f"[reanalyze] task={task_id[:8]} feedback={feedback[:100]}")
+    send_message(chat_id, f"🔄 收到反馈，重新分析中...")
+
+    try:
+        task_data, analysis = analyze(task_id, user_feedback=feedback)
+    except Exception as e:
+        log(f"[reanalyze] failed: {e}")
+        send_message(chat_id, f"❌ 重新分析失败：{e}")
+        return
+
+    task    = task_data["task"]
+    summary = task["summary"]
+    level   = analysis.get("level", "L2")
+    t_type  = analysis.get("type", "bug")
+
+    save_pending(task_id, task_data, analysis)
+
+    if level == "L1":
+        send_card(chat_id, build_l1_card(task_id, summary, analysis))
+    elif level == "L3":
+        send_card(chat_id, build_l3_card(task_id, summary, analysis))
+    elif t_type == "bug":
+        send_card(chat_id, build_bug_card(task_id, summary, analysis))
+    else:
+        send_card(chat_id, build_feature_card(task_id, summary, analysis))
+
+
+def _run_feishu_dev(task_id: str, task_data: dict | None = None, analysis: dict | None = None) -> dict:
+    """
+    调用 feishu-dev skill 完成编码。
+    把任务内容和分析结果全部塞进 prompt，feishu-dev 无需再调飞书 API。
+    """
+    cfg          = bot_cfg()
+    global_cfg   = read_config() or {}
+    frontend     = global_cfg.get("frontend_path", "")
+    backend      = global_cfg.get("backend_path", "") or cfg.get("project_path", "")
+
+    # 从 plan 判断前端还是后端
+    plan_str    = " ".join(analysis.get("plan", [])) if analysis else ""
+    is_frontend = any(k in plan_str for k in ("src/", ".vue", ".ts", ".js", ".css", ".scss", "components", "pages"))
+    is_backend  = any(k in plan_str for k in (".py", "routes/", "models/", "process/", "executors/"))
+
+    if is_frontend and not is_backend and frontend:
+        project_path = frontend
+    elif is_backend and not is_frontend and backend:
+        project_path = backend
+    else:
+        project_path = cfg.get("project_path") or backend or frontend or "."
+
+    # 任务详情（直接嵌入 prompt，跳过 feishu-dev 的 API 读取）
+    task_info = ""
+    if task_data:
+        t = task_data.get("task", {})
+        task_info = (
+            f"\n\n## 任务详情（已预加载，无需再调 API）\n\n"
+            f"任务标题：{t.get('summary', '')}\n"
+            f"任务描述：{t.get('description', '（无描述）')}\n"
+            f"任务链接：https://applink.feishu.cn/client/todo/detail?guid={task_id}\n"
+        )
+        comments = t.get("comments", [])
+        if comments:
+            task_info += "评论：\n" + "\n".join(f"- {c.get('content','')}" for c in comments)
+
+    # 分析结果
+    plan_text = ""
+    if analysis:
+        plan_items = "\n".join(f"- {p}" for p in analysis.get("plan", []))
+        plan_text  = (
+            f"\n\n## 已完成分析（直接按此计划执行，跳过 Phase 1）\n\n"
+            f"任务概要：{analysis.get('summary', '')}\n"
+            f"改动计划：\n{plan_items}"
+        )
+
+    prompt = f"BOT_AUTO_EXECUTE 帮我完成飞书任务 {task_id}{task_info}{plan_text}"
+
+    log(f"[feishu-dev] ── 开始执行 ──────────────────────────────")
+    log(f"[feishu-dev] task      = {task_id}")
+    log(f"[feishu-dev] cwd       = {project_path}")
+    log(f"[feishu-dev] frontend  = {frontend}")
+    log(f"[feishu-dev] backend   = {backend}")
+    log(f"[feishu-dev] is_fe     = {is_frontend}  is_be = {is_backend}")
+    log(f"[feishu-dev] model     = {EXECUTION_MODEL}")
+    log(f"[feishu-dev] prompt_len= {len(prompt)}")
+    log(f"[feishu-dev] prompt[:300]:\n{prompt[:300]}")
+    log(f"[feishu-dev] ──────────────────────────────────────────")
+
+    output = run_claude(
+        prompt, cwd=project_path,
+        model=EXECUTION_MODEL, timeout=600,
+        dangerously_skip_permissions=True,
+    )
+
+    log(f"[feishu-dev] ── 执行完成 ──────────────────────────────")
+    log(f"[feishu-dev] output_len = {len(output)}")
+    log(f"[feishu-dev] output_head:\n{output[:500]}")
+    log(f"[feishu-dev] output_tail:\n{output[-300:]}")
+    log(f"[feishu-dev] ──────────────────────────────────────────")
+
+    # 从输出里提取结果
+    import re as _re
+    branch  = ""
+    mr_url  = ""
+    for line in output.splitlines():
+        if "Branch:" in line:
+            branch = line.split("Branch:")[-1].strip()
+        urls = _re.findall(r'https?://[^\s\)]+', line)
+        for u in urls:
+            if any(k in u for k in ("merge_requests", "pulls", "gitlab", "github")):
+                mr_url = u
+                break
+
+    log(f"[feishu-dev] branch={branch!r} mr_url={mr_url!r}")
+    return {"success": True, "branch": branch, "mr_url": mr_url,
+            "files_changed": "", "error": None}
 
 
 # ── CLI 入口（方便本地测试）────────────────────────────────────────────────────

@@ -14,6 +14,16 @@ description: >
 **L2 任务**：拉取需求（一次调用） → 补问 → **【确认 Plan】** → 自动实现+静态验证 → **【用户验证功能】** → 自动 commit+push+标记完成。仅 2 个人工介入点。
 **L3 任务**：拉取需求 → 分析定位 → 输出报告，不改代码，不 commit。
 
+## 自动化模式（BOT_AUTO_EXECUTE）
+
+**若 prompt 中包含 `BOT_AUTO_EXECUTE`，进入全自动模式：**
+- Phase 2（Plan 确认）：**跳过等待**，直接输出 Plan 后立即执行 Phase 3
+- Phase 3.5（用户验证）：**跳过等待**，自检通过后直接 commit + push + 标记完成
+- Phase 1.6（清晰度补问）：**跳过**，直接基于已有信息执行
+- 若 prompt 中已包含改动计划（`已完成分析，直接按以下计划执行`），**跳过 Phase 1**，直接使用提供的计划进入 Phase 2
+
+---
+
 脚本：`${CLAUDE_PLUGIN_ROOT}/scripts/feishu_api.py`
 
 ---
@@ -168,7 +178,9 @@ PYTHONIOENCODING=utf-8 python3 "${CLAUDE_PLUGIN_ROOT}/scripts/feishu_api.py" get
 ━━━━━━━━━━━━━━━
 ```
 
-等用户确认或修正后再进入 Phase 3。
+**BOT_AUTO_EXECUTE 模式**：输出 Plan 后**不等待**，直接进入 Phase 3。
+
+否则：等用户确认或修正后再进入 Phase 3。
 
 ---
 
@@ -235,6 +247,9 @@ python3 -m py_compile <changed_files>
 ━━━━━━━━━━━━━━━━━
 ```
 
+**BOT_AUTO_EXECUTE 模式**：自检通过后**直接进入 3.6**，不暂停等待验证。
+
+否则：
 - 用户回复 "ok" / "通过" / "没问题" → 进入 3.6 自动完成所有后续步骤
 - 用户描述了问题 → 修复后重新回到 3.3 验证
 

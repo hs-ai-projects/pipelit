@@ -209,6 +209,23 @@ def on_card_action(data) -> "P2CardActionTriggerResponse":
                 args=(task_id,),
                 daemon=True,
             ).start()
+        elif action_type == "request_feedback" and task_id:
+            import feishu_bot_analyzer as analyzer
+            threading.Thread(
+                target=analyzer.show_feedback_input,
+                args=(task_id,),
+                daemon=True,
+            ).start()
+        elif action_type == "submit_feedback" and task_id:
+            import feishu_bot_analyzer as analyzer
+            # 从 form 数据里取输入的文字
+            form_value = body.get("event", {}).get("action", {}).get("form_value", {})
+            feedback   = form_value.get("feedback", "").strip()
+            threading.Thread(
+                target=analyzer.reanalyze_with_feedback,
+                args=(task_id, feedback),
+                daemon=True,
+            ).start()
         else:
             log("[card-action] unknown action or missing task_id, skip")
 
