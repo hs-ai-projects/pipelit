@@ -107,6 +107,8 @@ PYTHONIOENCODING=utf-8 python3 "${CLAUDE_PLUGIN_ROOT}/scripts/feishu_api.py" get
 
 **若为 L3**：输出分析报告后结束，不创建分支、不改代码、不 commit：
 
+**若未执行过 1.8，先执行 1.8（bug 日志辅助），再输出以下报告。**
+
 ```
 ━━━ L3 分析报告 ━━━
 任务: <标题>
@@ -183,7 +185,7 @@ PYTHONIOENCODING=utf-8 python3 "${CLAUDE_PLUGIN_ROOT}/scripts/feishu_api.py" get
 grep -rn "url\|path\|api" <frontend_path>/src/api --include="*.ts" | grep -i "<功能关键词>"
 ```
 
-读取命中文件，提取与当前 bug 功能模块语义匹配的接口路径前缀，得到候选列表（可为空数组）。
+读取命中文件，提取与当前 bug 功能模块语义匹配的接口路径前缀，得到候选列表（可为空数组）。候选列表可为空数组，直接继续执行 1.8c，不补问。
 
 #### 1.8c 时间推断
 
@@ -219,8 +221,12 @@ interfaces: [<候选接口路径前缀列表，可为空>]
 | guance 返回 | log_summary 值 |
 |-------------|---------------|
 | 精简摘要内容 | 摘要原文 |
-| `GUANCE_NOT_CONFIGURED` | `"⚠️ 观测云未配置，跳过日志分析"` |
+| `GUANCE_NOT_CONFIGURED` | `null`（静默跳过，不展示） |
 | `GUANCE_ERROR:*` / 无数据 | `null`（静默跳过，不展示） |
+
+> `GUANCE_NOT_CONFIGURED` 的字符串值**不展示给用户**，仅作为内部标记；`log_summary` 赋值后在 Plan/报告中只展示真实摘要，未配置时静默跳过。
+
+> log_summary 结果：L2 任务嵌入 Phase 2 Plan，L3 任务嵌入 Phase 1.3 分析报告。
 
 ---
 
