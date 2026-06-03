@@ -1318,9 +1318,22 @@ def send_release_card_with_mentions(params_json: str) -> dict:
         for entry in sec.get("entries", []):
             line = entry["text"]
             tid = entry.get("task_id")
-            oid = task_mentions.get(tid) if tid else None
+            # _at_override 优先，否则用 task_mentions 查到的
+            oid = entry.get("_at_override") or (task_mentions.get(tid) if tid else None)
+            # 飞书任务链接：优先用 entry 里的 task_guid，其次从 task_guids 映射里取
+            task_guid = entry.get("task_guid") or (task_guids.get(tid) if tid else None)
+            if task_guid:
+                task_url = f"https://applink.feishu.cn/client/todo/detail?guid={task_guid}"
+                line += f"  [任务]({task_url})"
+            # @ 换行显示
+            at_parts = []
             if oid:
-                line += f" <at id={oid}></at>"
+                at_parts.append(f"<at id={oid}></at>")
+            for fixed_oid in params.get("always_mention_open_ids", []):
+                if fixed_oid and fixed_oid != oid:
+                    at_parts.append(f"<at id={fixed_oid}></at>")
+            if at_parts:
+                line += "\n" + " ".join(at_parts)
             lines.append(line)
         lines.append("")
     content = "\n".join(lines).rstrip()

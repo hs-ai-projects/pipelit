@@ -615,6 +615,7 @@ Changelog: <outputDir>/changelog-<new_tag>.html
   "image_path": "<本地图片路径，可省略；填写后优先用本地图，不调用 OpenAI>",
   "at_rule": "first_follower",
   "exclude_open_ids": [],
+  "always_mention_open_ids": "<从 release.alwaysMentionOpenIds 读取，若未配置填 []>",
   "sections": [...上一步结构...]
 }
 ```
@@ -635,6 +636,8 @@ Changelog: <outputDir>/changelog-<new_tag>.html
 - `none` — 不 @
 
 `exclude_open_ids` 是黑名单（如自己、机器人账号等）。若 release config 里配置了 `release.atRule` / `release.excludeOpenIds`，可从那里读默认值。
+
+`always_mention_open_ids` 是固定 @ 名单，无论任务有没有关注人，这些 open_id 都会追加在每条 entry 末尾。若 release config 里配置了 `release.alwaysMentionOpenIds`，从那里读默认值填入此字段。
 
 #### 3. 调用一站式命令
 
