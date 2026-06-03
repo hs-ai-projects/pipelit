@@ -1,1 +1,4 @@
 .cache/
+
+# Scratch experiments (per-engineer, never shared)
+scripts/experiments/
