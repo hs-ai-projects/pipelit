@@ -1,0 +1,47 @@
+{
+  "_comment": "Pipelit 推荐的 .claude/settings.json 配置模板。复制到项目 .claude/settings.json 后按需调整。",
+  "permissions": {
+    "allow": [
+      "Bash(git status*)",
+      "Bash(git diff*)",
+      "Bash(git log*)",
+      "Bash(git add *)",
+      "Bash(git commit*)",
+      "Bash(git push*)",
+      "Bash(git fetch*)",
+      "Bash(git tag*)",
+      "Bash(git branch*)",
+      "Bash(git checkout*)",
+      "Bash(git ls-remote*)",
+      "Bash(git rev-list*)",
+      "Bash(git show*)",
+      "Bash(git -C *)",
+      "Bash(PYTHONIOENCODING=utf-8 python3*)",
+      "Bash(python3 -m py_compile*)",
+      "Bash(python3*)",
+      "Bash(node -e*)",
+      "Bash(npm *)",
+      "Bash(cat .claude/*)",
+      "Bash(ls *)",
+      "Bash(mkdir *)"
+    ]
+  },
+  "hooks": {
+    "PreToolUse": [
+      {
+        "_comment": "AskUserQuestion 系统通知：AI 等待用户输入时弹出提示",
+        "matcher": "AskUserQuestion",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "powershell.exe -NonInteractive -ExecutionPolicy Bypass -File \"scripts/notify.ps1\" 2>/dev/null; exit 0"
+          }
+        ]
+      }
+    ]
+  },
+  "_mac_hook_example": {
+    "_comment": "Mac/Linux 用这个替换 hooks.PreToolUse[0].hooks[0].command：",
+    "command": "bash scripts/notify.sh 2>/dev/null; exit 0"
+  }
+}

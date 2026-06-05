@@ -228,8 +228,13 @@ PYTHONIOENCODING=utf-8 python3 "${CLAUDE_PLUGIN_ROOT}/scripts/decision_log.py" p
 2. **任务描述**：从任务描述中提取页面/模块名，grep 定位。
 3. **grep 兜底**：用任务关键词 grep 代码库。
 
-定位后：
-- 用提取到的接口路径在代码库中 grep 搜索，找到候选文件后读取前 30 行确认功能。
+定位后（**前后端并行 grep**，减少等待）：
+```bash
+grep -rn "<路径>" <frontend_path>/src --include="*.ts" --include="*.vue" &
+grep -rn "<路径>" <backend_path> --include="*.py" &
+wait
+```
+- 找到候选文件后读取前 30 行确认功能。
 - 候选 > 3 个时，**强制收敛到最长公共前缀**，用 AskUserQuestion 让用户选择。
 - AskUserQuestion 候选展示要列出**具体文件路径**而非"接口模块"。
 

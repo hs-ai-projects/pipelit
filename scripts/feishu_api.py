@@ -63,6 +63,10 @@ USER_TOKEN_CACHE = USER_CONFIG_DIR / ".user_token_cache.json"
 # 静态资源：跟着脚本走，相对 __file__ 引用
 TEMPLATE_DIR = pathlib.Path(__file__).parent / "templates"
 PLUGIN_ROOT = pathlib.Path(__file__).parent.parent
+
+# Task 结果缓存（减少重复 API 调用）
+TASK_CACHE_DIR = USER_CONFIG_DIR / "task-cache"
+TASK_CACHE_TTL = 300  # 5 分钟（秒）
 DEFAULT_RELEASE_REFERENCE_IMAGE = PLUGIN_ROOT / "feilun.png"
 
 
@@ -117,6 +121,42 @@ STATUS_OPTIONS = {
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
+
+def _task_cache_path(tid: str) -> pathlib.Path:
+    return TASK_CACHE_DIR / f"{tid}.json"
+
+
+def _get_cached_task(tid: str) -> dict | None:
+    """读取 task 缓存（TTL = TASK_CACHE_TTL 秒）。过期或不存在返回 None。"""
+    path = _task_cache_path(tid)
+    if not path.exists():
+        return None
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        if time.time() - data.get("_cached_at", 0) > TASK_CACHE_TTL:
+            path.unlink(missing_ok=True)
+            return None
+        return data
+    except Exception:
+        return None
+
+
+def _cache_task(tid: str, data: dict) -> None:
+    """写入 task 缓存，附加 _cached_at 时间戳。"""
+    try:
+        TASK_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+        payload = {**data, "_cached_at": time.time()}
+        _task_cache_path(tid).write_text(
+            json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8"
+        )
+    except Exception:
+        pass  # 缓存写失败不影响主流程
+
+
+def _invalidate_task_cache(tid: str) -> None:
+    """任务状态变更后（complete / add_comment）主动删除缓存。"""
+    _task_cache_path(tid).unlink(missing_ok=True)
+
 
 def format_ms_timestamp(ts, fmt="%Y-%m-%d %H:%M") -> str | None:
     """统一处理飞书毫秒/秒时间戳，兼容两种格式。"""
@@ -635,9 +675,20 @@ def get_subtasks(task_id: str) -> dict:
     }
 
 
-def get_task_full(task_id: str) -> dict:
-    """一次调用拿到任务全部上下文：任务详情 + 子任务 + 附件图片 + 项目配置。"""
+def get_task_full(task_id: str, no_cache: bool = False) -> dict:
+    """一次调用拿到任务全部上下文：任务详情 + 子任务 + 附件图片 + 项目配置。
+
+    结果缓存 TASK_CACHE_TTL 秒（默认 5 分钟），减少重复 API 调用。
+    传 no_cache=True 强制刷新。
+    """
     tid = parse_task_id(task_id)
+
+    # 检查缓存
+    if not no_cache:
+        cached = _get_cached_task(tid)
+        if cached:
+            return {k: v for k, v in cached.items() if not k.startswith("_")}
+
     token = get_user_token()  # 个人任务需要 user_access_token
 
     # 任务详情
@@ -704,11 +755,13 @@ def get_task_full(task_id: str) -> dict:
         )
     if video_errors:
         result["video_errors"] = video_errors
+    _cache_task(tid, result)
     return result
 
 
 def complete_task(task_id: str) -> dict:
     tid = parse_task_id(task_id)
+    _invalidate_task_cache(tid)
     token = get_token()
     result = http(
         "PATCH",
@@ -723,6 +776,7 @@ def complete_task(task_id: str) -> dict:
 
 def add_comment(task_id: str, comment: str) -> dict:
     tid = parse_task_id(task_id)
+    _invalidate_task_cache(tid)
     token = get_token()
     result = http(
         "POST",
