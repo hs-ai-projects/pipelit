@@ -232,6 +232,41 @@ def save_project_config(frontend_path: str = None, backend_path: str = None) -> 
     }
 
 
+def load_merged_config(cwd: str | None = None) -> dict:
+    """三层配置合并：L1 用户级 < L2 项目级 < L3 仓库级（浅合并，高层覆盖低层）。
+
+    L1: ~/.claude/pipelit/config.json        凭据、全局默认值
+    L2: <cwd>/.pipelit/config.json            项目路径、发版配置
+    L3: <cwd>/.pipelit.json（可选）           仓库级 precheck、特殊规则
+    """
+    result: dict = {}
+
+    # L1
+    l1 = read_config()
+    if l1:
+        result.update(l1)
+
+    base = pathlib.Path(cwd) if cwd else pathlib.Path.cwd()
+
+    # L2
+    l2_file = base / ".pipelit" / "config.json"
+    if l2_file.exists():
+        try:
+            result.update(json.loads(l2_file.read_text(encoding="utf-8")))
+        except Exception:
+            pass
+
+    # L3
+    l3_file = base / ".pipelit.json"
+    if l3_file.exists():
+        try:
+            result.update(json.loads(l3_file.read_text(encoding="utf-8")))
+        except Exception:
+            pass
+
+    return result
+
+
 # ── Token ─────────────────────────────────────────────────────────────────────
 
 def get_token() -> str:
@@ -427,8 +462,17 @@ def get_task_comments(tid: str, token: str) -> list:
     ]
 
 
+_VIDEO_EXTS = {".mp4", ".mov", ".avi", ".mkv", ".webm", ".flv", ".m4v"}
+_IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".svg"}
+
+
 def fetch_task_images(tid: str, token: str) -> list:
-    """拉取任务附件（图片），下载到本地，返回本地路径列表。"""
+    """拉取任务附件（图片 + 视频），下载到本地，返回附件列表。
+
+    图片下载到 ~/.claude/pipelit/images/
+    视频下载到 ~/.claude/pipelit/attachments/<tid[:8]>/
+    每项格式：{"path": str, "name": str, "type": "image"|"video"}
+    """
     result = http(
         "GET",
         f"/open-apis/task/v2/attachments?resource_type=task&resource_id={tid}&page_size=50",
@@ -436,25 +480,42 @@ def fetch_task_images(tid: str, token: str) -> list:
     )
     if result.get("code") != 0:
         return []
+
     img_dir = USER_CONFIG_DIR / "images"
+    vid_dir = USER_CONFIG_DIR / "attachments" / tid[:8]
     img_dir.mkdir(parents=True, exist_ok=True)
+
     saved = []
     for att in result.get("data", {}).get("items", []):
-        name = att.get("name", "image.png")
-        ext = pathlib.Path(name).suffix or ".png"
+        name = att.get("name", "file")
+        ext = pathlib.Path(name).suffix.lower()
         att_id = att.get("guid", att.get("id", name))
-        out_path = img_dir / f"{tid[:8]}_{att_id}{ext}"
+
+        is_video = ext in _VIDEO_EXTS
+        is_image = ext in _IMAGE_EXTS or (not is_video and not ext)
+
+        if is_video:
+            vid_dir.mkdir(parents=True, exist_ok=True)
+            out_path = vid_dir / f"{att_id}{ext}"
+        else:
+            out_path = img_dir / f"{tid[:8]}_{att_id}{ext or '.png'}"
+
         if not out_path.exists():
             url = att.get("url", "")
             if not url:
-                saved.append({"error": "无下载链接", "name": name})
+                saved.append({"error": "无下载链接", "name": name, "type": "video" if is_video else "image"})
                 continue
             try:
                 out_path.write_bytes(http_download(url, token))
             except Exception as e:
-                saved.append({"error": str(e), "name": name})
+                saved.append({"error": str(e), "name": name, "type": "video" if is_video else "image"})
                 continue
-        saved.append({"path": str(out_path), "name": name})
+
+        saved.append({
+            "path": str(out_path),
+            "name": name,
+            "type": "video" if is_video else "image",
+        })
     return saved
 
 
@@ -604,19 +665,21 @@ def get_task_full(task_id: str) -> dict:
                 "link": f"https://applink.feishu.cn/client/todo/detail?guid={st['guid']}",
             })
 
-    # 附件图片（自动下载）
-    images = fetch_task_images(tid, token)
-    downloaded_images = [i for i in images if "path" in i]
+    # 附件：图片 + 视频（自动下载）
+    attachments = fetch_task_images(tid, token)
+    images = [a for a in attachments if a.get("type") == "image" and "path" in a]
+    videos = [a for a in attachments if a.get("type") == "video" and "path" in a]
+    video_errors = [a for a in attachments if a.get("type") == "video" and "error" in a]
 
-    # 项目配置
-    cfg = read_config() or {}
+    # 项目配置（三层合并）
+    merged_cfg = load_merged_config()
     project_config = {
-        "configured": bool(cfg.get("frontend_path") or cfg.get("backend_path")),
-        "frontend_path": cfg.get("frontend_path"),
-        "backend_path": cfg.get("backend_path"),
+        "configured": bool(merged_cfg.get("frontend_path") or merged_cfg.get("backend_path")),
+        "frontend_path": merged_cfg.get("frontend_path"),
+        "backend_path": merged_cfg.get("backend_path"),
     }
 
-    return {
+    result = {
         "task": {
             "id": t["guid"],
             "summary": t["summary"],
@@ -629,9 +692,19 @@ def get_task_full(task_id: str) -> dict:
         "subtasks": subtasks,
         "has_subtasks": len(subtasks) > 0,
         "images": images,
-        "has_images": len(downloaded_images) > 0,
+        "has_images": len(images) > 0,
+        "videos": videos,
+        "has_videos": len(videos) > 0,
         "project_config": project_config,
     }
+    if videos:
+        result["video_notice"] = (
+            f"已下载 {len(videos)} 个视频附件，请人工查看：" +
+            ", ".join(v["path"] for v in videos)
+        )
+    if video_errors:
+        result["video_errors"] = video_errors
+    return result
 
 
 def complete_task(task_id: str) -> dict:
@@ -1285,8 +1358,23 @@ def send_release_card_with_mentions(params_json: str) -> dict:
     sections = params["sections"]
     doc_url = params.get("doc_url", "")
     image_path = params.get("image_path")
-    generate_image = _truthy(params.get("generate_image")) or bool(params.get("image_prompt"))
-    at_rule = params.get("at_rule", "first_follower")
+
+    # cardFeatures: 从 params > L1 config > 默认 true
+    _global_features = (read_config() or {}).get("cardFeatures", {})
+    _param_features = params.get("card_features", {})
+    _merged_features = {**{"linkTask": True, "atFollower": True, "image": True},
+                        **_global_features, **_param_features}
+    _image_enabled = _merged_features.get("image", True)
+    _at_enabled = _merged_features.get("atFollower", True)
+
+    # image=false 时跳过生成/上传，忽略 generate_image 和 image_path
+    generate_image = _image_enabled and (
+        _truthy(params.get("generate_image")) or bool(params.get("image_prompt"))
+    )
+    if not _image_enabled:
+        image_path = None
+
+    at_rule = params.get("at_rule", "first_follower") if _at_enabled else "none"
     exclude = list(params.get("exclude_open_ids", []))
 
     # 1. 为每个唯一 task_id 查 @ open_id 和完整 GUID
@@ -1311,32 +1399,20 @@ def send_release_card_with_mentions(params_json: str) -> dict:
             else:
                 task_mentions[tid] = None
 
-    # 2. 拼装 lark_md 内容
-    lines: list[str] = []
-    for sec in sections:
-        lines.append(sec["title"])
-        for entry in sec.get("entries", []):
-            line = entry["text"]
-            tid = entry.get("task_id")
-            # _at_override 优先，否则用 task_mentions 查到的
-            oid = entry.get("_at_override") or (task_mentions.get(tid) if tid else None)
-            # 飞书任务链接：优先用 entry 里的 task_guid，其次从 task_guids 映射里取
-            task_guid = entry.get("task_guid") or (task_guids.get(tid) if tid else None)
-            if task_guid:
-                task_url = f"https://applink.feishu.cn/client/todo/detail?guid={task_guid}"
-                line += f"  [任务]({task_url})"
-            # @ 换行显示
-            at_parts = []
-            if oid:
-                at_parts.append(f"<at id={oid}></at>")
-            for fixed_oid in params.get("always_mention_open_ids", []):
-                if fixed_oid and fixed_oid != oid:
-                    at_parts.append(f"<at id={fixed_oid}></at>")
-            if at_parts:
-                line += "\n" + " ".join(at_parts)
-            lines.append(line)
-        lines.append("")
-    content = "\n".join(lines).rstrip()
+    # 2. 拼装 lark_md 内容（通过 card_builder，支持 cardFeatures 开关）
+    import importlib.util as _ilu
+    _cb_path = pathlib.Path(__file__).parent / "card_builder.py"
+    _cb_spec = _ilu.spec_from_file_location("card_builder", _cb_path)
+    _cb_mod = _ilu.module_from_spec(_cb_spec)
+    _cb_spec.loader.exec_module(_cb_mod)
+    cb_result = _cb_mod.build_lark_md({
+        "sections": sections,
+        "task_mentions": task_mentions,
+        "task_guids": task_guids,
+        "always_mention_open_ids": params.get("always_mention_open_ids", []),
+        "card_features": params.get("card_features", {}),
+    })
+    content = cb_result["lark_md"]
 
     # 3. 生成/上传图片，拿到飞书 image_key 后写入卡片 img_key。
     image_params = dict(params)

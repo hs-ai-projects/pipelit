@@ -710,9 +710,25 @@ PYTHONIOENCODING=utf-8 python3 "${CLAUDE_PLUGIN_ROOT}/scripts/decision_log.py" f
   "at_rule": "first_follower",
   "exclude_open_ids": [],
   "always_mention_open_ids": "<从 release.alwaysMentionOpenIds 读取，若未配置填 []>",
+  "card_features": {
+    "linkTask": true,
+    "atFollower": true,
+    "image": true
+  },
   "sections": [...上一步结构...]
 }
 ```
+
+**`card_features` 字段说明**（可选，每项独立 if，缺任何一项不影响其他）：
+
+| 字段 | 默认 | 效果 |
+|------|------|------|
+| `linkTask` | `true` | 每条 entry 是否附飞书任务链接 |
+| `atFollower` | `true` | 每条 entry 是否 @ 任务关注人 |
+| `image` | `true` | 是否生成/上传发版图 |
+
+> 优先级：params 字段 > L1 `~/.claude/pipelit/config.json` 里的 `cardFeatures` > 默认 true。
+> 全部关闭时生成纯文字 lark_md 卡片，不阻断流程。
 
 图片规则：
 - 默认传 `"generate_image": true`，由脚本调用 OpenAI Images API 生成一张 1:1 发版卡片图；脚本会继续调用飞书图片上传接口拿到 `image_key`，并把这个值写入卡片模板的 `img_key`
