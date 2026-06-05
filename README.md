@@ -142,12 +142,15 @@ precheck → dry-run 预览 → 一次确认 → 全自动执行
 
 ## 配置文件
 
-配置存储在**用户主目录**，跨工作目录共享：
+配置分**三层**，优先级 L3 > L2 > L1（高层覆盖低层，浅合并）：
 
-```
-~/.claude/pipelit/config.json
-# Windows: %USERPROFILE%\.claude\pipelit\config.json
-```
+| 层 | 位置 | 内容 |
+|----|------|------|
+| L1 用户级 | `~/.claude/pipelit/config.json` | 飞书/观测云凭据、logProvider、cardFeatures |
+| L2 项目级 | `<cwd>/.pipelit/config.json` | 项目路径、发版配置（可提交进仓库） |
+| L3 仓库级 | `<repo>/.pipelit.json`（可选） | precheck 命令、特殊规则 |
+
+完整说明见 [docs/config-hierarchy.md](docs/config-hierarchy.md)。
 
 首次使用任意 skill 时会自动引导填写，无需手动创建。
 
@@ -188,6 +191,28 @@ precheck → dry-run 预览 → 一次确认 → 全自动执行
 }
 ```
 
+新增配置字段（v4.x）：
+
+```json
+{
+  "logProvider": "guance",
+  "cardFeatures": {
+    "linkTask": true,
+    "atFollower": true,
+    "image": true
+  }
+}
+```
+
+| 字段 | 用途 | 默认值 |
+|------|------|-------|
+| `logProvider` | 日志源：`guance`（观测云）/ `noop`（禁用） | `guance` |
+| `cardFeatures.linkTask` | 发版卡片是否附飞书任务链接 | `true` |
+| `cardFeatures.atFollower` | 发版卡片是否 @ 任务关注人 | `true` |
+| `cardFeatures.image` | 发版卡片是否生成图片 | `true` |
+
+---
+
 | 字段 | 用途 | 写入时机 |
 |------|------|---------|
 | `app_id` / `app_secret` | 飞书应用凭据 | 首次使用飞书 skill 时引导 |
@@ -202,6 +227,49 @@ precheck → dry-run 预览 → 一次确认 → 全自动执行
 | `release.chatId` | 发版后推送卡片的飞书群 ID | release 完成后询问 |
 
 配置文件存在用户主目录，**不会进入任何项目仓库**（自然隔离）。
+
+## 系统通知 hook（可选）
+
+AI 等待你输入时，弹出系统托盘通知，避免不知道 AI 在等你：
+
+```bash
+# 运行 using-pipelit 时按提示一键配置
+/using-pipelit
+```
+
+或手动把 [docs/settings-template.json](docs/settings-template.json) 的 `hooks` 段复制到项目 `.claude/settings.json`。
+
+- Windows：`scripts/notify.ps1`（系统托盘气泡）
+- Mac/Linux：`scripts/notify.sh`（`osascript` / `notify-send`）
+
+---
+
+## 决策审计日志
+
+feishu-dev 每次 L2/L3 分级决策都会写入 `~/.claude/pipelit/decision-logs/`，用 `audit.py` 查询：
+
+```bash
+# 最近 10 次判定
+python3 scripts/audit.py recent
+
+# 某次为什么判 L2/L3
+python3 scripts/audit.py why <task_id 前缀>
+
+# 对比两次决策是否一致
+python3 scripts/audit.py diff <task_id_1> <task_id_2>
+```
+
+---
+
+## 回归测试
+
+修改 `scripts/` 后必须跑通再提交：
+
+```bash
+PYTHONIOENCODING=utf-8 python3 tests/test_regression.py
+```
+
+---
 
 ## 环境变量
 
