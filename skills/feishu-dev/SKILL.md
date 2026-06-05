@@ -14,9 +14,22 @@ description: >
 **L2 任务**：拉取需求（一次调用） → 补问 → **【确认 Plan】** → 自动实现+静态验证 → **【用户验证功能】** → 自动 commit+push+标记完成。仅 2 个人工介入点。
 **L3 任务**：拉取需求 → 分析定位 → 输出报告，不改代码，不 commit。
 
+## 续接检测（RESUME-CHECK）
+
+**启动时第一件事**（在 MODE-CHECK 之前）：按 `protocols/resume.md` 检查是否有未完成任务。
+
+```bash
+ls .feishu-dev-state.json 2>/dev/null && echo "found" || echo "not found"
+```
+
+- 若文件存在且 `last_updated` 距今 < 24h → 输出 `[RESUME-CHECK] 发现未完成任务: <task_summary>，Phase: <current_phase>` → AskUserQuestion（续接 / 放弃 / 仅查看）
+- 若文件不存在或 ≥ 24h → 跳过，正常走新任务流程
+
+---
+
 ## 自动化模式（BOT_AUTO_EXECUTE）
 
-**[MODE-CHECK]** 启动时第一件事：检查 prompt 中是否包含 `BOT_AUTO_EXECUTE`，并**输出一行 log**：
+**[MODE-CHECK]** 启动时第二件事：检查 prompt 中是否包含 `BOT_AUTO_EXECUTE`，并**输出一行 log**：
 
 ```
 [MODE-CHECK] BOT_AUTO_EXECUTE: <yes / no>
@@ -77,6 +90,9 @@ PYTHONIOENCODING=utf-8 python3 "${CLAUDE_PLUGIN_ROOT}/scripts/feishu_api.py" lis
 ---
 
 ## Phase 1：拉取 + 理解需求（一次调用）
+
+> **写状态文件（仅 L2 任务，完成 1.1 拉取后立即写）**：
+> 按 `protocols/resume.md` schema 写 `.feishu-dev-state.json`，`current_phase: "1"`。
 
 ### 1.1 拉取任务全量上下文
 
@@ -299,6 +315,8 @@ interfaces: [<候选接口路径前缀列表，可为空>]
 
 ## Phase 2：Plan（用户确认）
 
+> **写状态文件（Plan 用户确认后更新）**：`current_phase: "2-done"`，`plan_summary: "<100字摘要>"`。
+
 ```
 ━━━ 实现计划 ━━━
 任务: <标题>
@@ -327,6 +345,8 @@ interfaces: [<候选接口路径前缀列表，可为空>]
 ---
 
 ## Phase 3：执行
+
+> **写状态文件（3.1 分支创建后更新）**：`current_phase: "3"`，`branch: "<分支名>"`，`repos: [...]`，`pending_actions: ["implement","commit","push"]`。
 
 ### 3.1 创建分支（每个仓库独立执行）
 
@@ -388,6 +408,8 @@ python3 -m py_compile <changed_files>
 发现问题直接修掉，改动较大时在收尾报告里说明。
 
 ### 3.5 用户验证（第 2 个人工介入点）
+
+> **写状态文件（暂停前更新）**：`current_phase: "3.5"`，`pending_actions: ["commit","push","mark_done"]`。
 
 自检通过后，**暂停并让用户验证功能**：
 
@@ -461,6 +483,8 @@ Pushed: ✅ / 待推送
 飞书已完成: ✅ / 待确认
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 ```
+
+> **清理状态文件（Phase 4 完成后）**：`rm -f .feishu-dev-state.json`
 
 ---
 
