@@ -310,12 +310,36 @@ Precheck: ✅ 全部通过
 > **所有 bash 命令直接执行，不再询问用户确认，包括 git push。**
 > **将多步 git 命令合并为单次 bash 调用，减少权限提示次数。**
 
-### 3.1 更新版本号文件
+**状态机**：完整状态定义和恢复协议见 `state-machine.md`。
+关键流程：`PREVIEWED → COMMITTED → PUSHING → PUSHED → COMPLETED`。
+每次状态转换写 `<changelog.outputDir>/.release-state.json`。
+
+### 3.1 预写状态文件
+
+Phase 3 开始前，初始化状态文件：
+
+```bash
+PYTHONIOENCODING=utf-8 python3 "${CLAUDE_PLUGIN_ROOT}/scripts/decision_log.py" start release "<new_tag>" --summary "<new_tag> release"
+```
+
+写入 `<changelog.outputDir>/.release-state.json`：
+```json
+{
+  "state": "PREVIEWED",
+  "version": "<new_tag>",
+  "date": "<YYYY-MM-DD>",
+  "started_at": "<ISO 8601>",
+  "last_updated": "<ISO 8601>",
+  "repos": [...]
+}
+```
+
+### 3.2 更新版本号文件
 
 - `package.json`：更新 `"version"` 字段（不带前缀，只写 `X.Y.Z`）
 - `pyproject.toml`：更新 `version = "..."` 字段
 
-### 3.2 Commit + Tag
+### 3.3 Commit + Tag（状态 → COMMITTED）
 
 > **⚠️ 必须用 `git -C "<path>"` 形式，禁止用 `cd "<path>" && git`。**
 
@@ -325,15 +349,27 @@ git -C "<repo_path>" commit -m "chore: release <new_tag>" && \
 git -C "<repo_path>" tag -a <new_tag> -m "<从变更中提取的主题关键词>"
 ```
 
-### 3.3 Push（已授权，直接执行，不再确认）
+commit + tag 全部成功后，更新状态文件：
+- `state: "COMMITTED"`，`repos[].committed: true`，`repos[].tagged: true`
+
+任一仓库失败 → `state: "ROLLBACK_READY"`，中断流程，输出回滚命令。
+
+### 3.4 Push（状态 → PUSHING → PUSHED / PARTIAL_PUSHED）
 
 ```bash
 git -C "<repo_path>" push origin <releaseBranch> && git -C "<repo_path>" push origin <new_tag>
 ```
 
+状态转换：
+- 开始 push → `state: "PUSHING"`
+- 全部成功 → `state: "PUSHED"`，`repos[].pushed: true`
+- 部分失败 → `state: "PARTIAL_PUSHED"`，标记 `repos[].pushed: false`
+
 多仓库依次执行。
 
-### 3.4 生成 release-manifest.json
+**PARTIAL_PUSHED 恢复**：用户说"继续发版"时，读取 `.release-state.json`，重试 `pushed: false` 的仓库。
+
+### 3.5 生成 release-manifest.json
 
 push 成功后写入 `<changelog.outputDir>/release-manifest.json`：
 
@@ -359,7 +395,7 @@ push 成功后写入 `<changelog.outputDir>/release-manifest.json`：
 
 > **注意：`prevTag`、`currentTag`、`range` 全部使用实际 tag 名称（保持检测到的 `v` 格式），不强制添加或删除前缀。**
 
-### 3.5 生成 Changelog（若 `changelog.enabled: true`）
+### 3.6 生成 Changelog（若 `changelog.enabled: true`）
 
 **直接内联生成，无需用户再运行 `/changelog`。**
 
@@ -451,7 +487,7 @@ git -C "<repo_path>" diff <range> --stat
 - `<outputDir>/changelog-<new_tag>.html`
 - `<outputDir>/changelog-<new_tag>.md`
 
-### 3.6 生成版本更新概述
+### 3.7 生成版本更新概述
 
 从 3.5 生成的内容中提炼。**此部分在代码块外单独输出**，标题渲染为加粗文字。
 
@@ -477,14 +513,17 @@ git -C "<repo_path>" diff <range> --stat
 
 ## Phase 4：失败处理
 
+**状态恢复**：完整状态机定义和恢复协议见 `state-machine.md`。
+核心恢复入口：用户说"继续发版" / `/release resume` → 读取 `.release-state.json` → 跳到对应步骤。
+
 ### 状态定义
 
-| 状态 | 含义 |
-|------|------|
-| `success` | 全部成功 |
-| `failed` | 流程失败，无远端影响 |
-| `partial_release` | 部分已推送，部分失败 |
-| `cancelled` | 用户取消 |
+| 状态 | 含义 | 恢复方式 |
+|------|------|---------|
+| `success` | 全部成功 | — |
+| `failed` | 流程失败，无远端影响 | 重新发版 |
+| `partial_release` | 部分已推送，部分失败 | `/release resume` 重试 push |
+| `cancelled` | 用户取消 | 重新发版 |
 
 ### partial_release 示例
 
@@ -493,6 +532,9 @@ git -C "<repo_path>" diff <range> --stat
 
 frontend ✅ 已推送 <new_tag>
 backend  ❌ push 失败
+
+状态文件: <outputDir>/.release-state.json
+恢复方式: 说"继续发版"或 /release resume
 
 建议手动执行（确认后可由 Claude 执行）:
   git -C "<backend_path>" push origin master
@@ -518,6 +560,11 @@ backend  ❌ push 失败
 
 Changelog: <outputDir>/changelog-<new_tag>.html
 （浏览器打开 → Ctrl+A → Ctrl+C → 飞书文档 Ctrl+V）
+```
+
+更新状态文件为 COMPLETED：
+```bash
+PYTHONIOENCODING=utf-8 python3 "${CLAUDE_PLUGIN_ROOT}/scripts/decision_log.py" finish "<new_tag>" completed
 ```
 
 然后在代码块外，另起行输出版本更新概述（标题渲染为加粗，可直接复制到飞书群）：

@@ -109,12 +109,37 @@ PYTHONIOENCODING=utf-8 python3 "${CLAUDE_PLUGIN_ROOT}/scripts/feishu_api.py" get
 
 ### 1.3 复杂度判断（L2 继续 / L3 转分析）
 
-读完任务后，先判断是否属于 L3 高风险，**满足任意一条即为 L3**：
+按 `rules/classification.md` 的决策树执行判定，**按优先级自上而下匹配，命中即返回**。
 
-- 描述涉及架构调整、多模块重构、整体改版
-- 预计影响文件 > 5 个，或需要跨多个模块
-- 线上事故、根因不明、影响范围不确定
-- 描述极其模糊，补问也无法收敛到具体文件
+判定完成后：
+
+1. **输出一行 log**：`[1.3] 分级结果：<L2/L3>，命中规则：<规则名>，候选文件数=<N>，描述长度=<N>，截图=<有/无>`
+
+2. **写入 audit JSON**（通过 decision_log.py）：
+```bash
+PYTHONIOENCODING=utf-8 python3 "${CLAUDE_PLUGIN_ROOT}/scripts/decision_log.py" start feishu-dev <task_id> --summary "<summary>"
+PYTHONIOENCODING=utf-8 python3 "${CLAUDE_PLUGIN_ROOT}/scripts/decision_log.py" phase <task_id> 1.3 @/tmp/phase-1.3.json
+```
+
+3. **audit evidence 字段**（写入 `/tmp/phase-1.3.json`）：
+```json
+{
+  "decision_type": "level_classification",
+  "level": "L2",
+  "matched_rule": "default-l2",
+  "rule_priority": 6,
+  "evidence": {
+    "candidate_files": 2,
+    "desc_length": 132,
+    "has_screenshot": true,
+    "has_attachment": false,
+    "is_bug_task": false,
+    "matched_keywords": [],
+    "feishu_tags": []
+  },
+  "fallback_attempted": false
+}
+```
 
 **若为 L3**：输出分析报告后结束，不创建分支、不改代码、不 commit：
 
