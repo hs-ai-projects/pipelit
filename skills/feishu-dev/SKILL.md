@@ -16,11 +16,22 @@ description: >
 
 ## 自动化模式（BOT_AUTO_EXECUTE）
 
+**[MODE-CHECK]** 启动时第一件事：检查 prompt 中是否包含 `BOT_AUTO_EXECUTE`，并**输出一行 log**：
+
+```
+[MODE-CHECK] BOT_AUTO_EXECUTE: <yes / no>
+```
+
 **若 prompt 中包含 `BOT_AUTO_EXECUTE`，进入全自动模式：**
 - Phase 2（Plan 确认）：**跳过等待**，直接输出 Plan 后立即执行 Phase 3
 - Phase 3.5（用户验证）：**跳过等待**，自检通过后直接 commit + push + 标记完成
 - Phase 1.6（清晰度补问）：**跳过**，直接基于已有信息执行
 - 若 prompt 中已包含改动计划（`已完成分析，直接按以下计划执行`），**跳过 Phase 1**，直接使用提供的计划进入 Phase 2
+
+**不在 BOT_AUTO_EXECUTE 模式时（`[MODE-CHECK] BOT_AUTO_EXECUTE: no`）：**
+- **Phase 3.5 不可省略**：即使 AI 自检通过，也必须暂停等待用户验证
+- **Phase 2 Plan 必须等用户确认**：不能自动跳过
+- 各 Phase 跳过用户验证前必须 re-check `[MODE-CHECK]` 标志
 
 ---
 
@@ -161,8 +172,26 @@ PYTHONIOENCODING=utf-8 python3 "${CLAUDE_PLUGIN_ROOT}/scripts/feishu_api.py" get
 
 ### 1.7 定位目标文件
 
-用任务关键词 grep 代码库，找到候选文件后读取前 30 行确认功能。
-若命中多个候选，用 AskUserQuestion 让用户选择。
+**优先级从高到低**：
+
+1. **截图 URL（最高优先级）**：若 1.2 读取的截图中包含 Network 面板、URL 栏、错误信息中的接口路径，**直接提取完整 URL 路径**（含子路径，如 `/api/ads/create-ads/report` 而非 `/api/ads/create-ads`），作为接口定位的权威来源。
+2. **任务描述**：从任务描述中提取页面/模块名，grep 定位。
+3. **grep 兜底**：用任务关键词 grep 代码库。
+
+定位后：
+- 用提取到的接口路径在代码库中 grep 搜索，找到候选文件后读取前 30 行确认功能。
+- 候选 > 3 个时，**强制收敛到最长公共前缀**，用 AskUserQuestion 让用户选择。
+- AskUserQuestion 候选展示要列出**具体文件路径**而非"接口模块"。
+
+### 1.7b 接口路径精确匹配
+
+从 1.7 定位到的文件 + 截图 URL 中提取接口路径，在代码库中 grep 确认：
+
+```bash
+grep -rn "<从截图提取的完整URL路径>" <frontend_path>/src --include="*.ts" --include="*.vue" --include="*.js"
+```
+
+**关键**：不能只搜父路径（如 `/api/ads/create-ads`），必须包含子路径（如 `/api/ads/create-ads/report`）。
 
 ---
 
@@ -276,14 +305,33 @@ interfaces: [<候选接口路径前缀列表，可为空>]
 
 ### 3.1 创建分支（每个仓库独立执行）
 
-任务可能涉及前端和后端两个仓库。**对每个涉及的仓库独立执行以下逻辑**：
+任务可能涉及前端和后端两个仓库。**对每个涉及的仓库独立执行以下逻辑，不可跳过任一仓库**：
+
+**执行规则**：
+
+1. `cd` 到该仓库路径
+2. 检查当前分支：
+   - 在 master/main/dev → 创建 `feat/feishu-{task_id 前 8 位}`
+   - 已有同名 feat 分支 → 切换到已有分支
+   - 在其他 feature 分支（非本任务的） → 仍然创建 `feat/feishu-{task_id 前 8 位}`
+3. **强制输出 log**，每个仓库一行：
 
 ```
-1. cd 到该仓库路径
-2. 检查当前分支：
-   - 在 master/main/dev → 创建 feat/feishu-{task_id 前 8 位}
-   - 已有同名 feat 分支  → 切换到已有分支
-   - 在其他 feature 分支（非本任务的） → 仍然创建 feat/feishu-{task_id 前 8 位}
+[3.1-frontend] 当前分支: master → 创建 feat/feishu-XXXXXXXX
+[3.1-backend]  当前分支: master → 创建 feat/feishu-XXXXXXXX
+```
+
+4. 任一仓库跳过分支创建，必须输出原因：
+
+```
+[3.1-<repo>] 跳过原因: <reason>
+```
+
+**反例（禁止）**：
+
+```
+[3.1-frontend] 创建 feat/feishu-xxx
+（后端没日志，直接在 master 上改）  ← 不允许！
 ```
 
 **关键**：不能因为其中一个仓库已经切到了 feat 分支，就跳过另一个仓库的分支创建。两个仓库的状态互不影响。

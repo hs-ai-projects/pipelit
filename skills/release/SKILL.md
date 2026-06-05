@@ -210,9 +210,17 @@ git -C "<repo_path>" tag --sort=-creatordate | head -5
 后续所有 tag 名称、manifest range 均使用检测到的格式，**不强制添加或删除 `v`**。
 
 ```bash
-git -C "<repo_path>" log <last_tag>..HEAD --oneline --no-merges
-git -C "<repo_path>" log <last_tag>..HEAD --oneline --merges
+git -C "<repo_path>" log <last_tag>..HEAD --format="=== %h ===%n%B" --no-merges
+git -C "<repo_path>" log <last_tag>..HEAD --format="=== %h ===%n%B" --merges
 ```
+
+**从 commit body 提取 Feishu-Task（关键，避免 fuzzy 匹配）：**
+
+`--format="=== %h ===%n%B"` 会输出完整 commit body，从中提取 `Feishu-Task: <url>` 行：
+
+- 若 body 中存在 `Feishu-Task: https://applink.feishu.cn/...` → 直接作为该 changelog 条目的飞书链接
+- 若 body 中无此字段 → 再尝试通过分支名 `feat/feishu-XXXXXXXX` 提取 task_id 前 8 位
+- 两者都没有 → 该条目无飞书链接，不调用 `list_tasks` 做语义匹配（避免 fuzzy 匹配错误）
 
 **Merge commit 处理规则（关键，防止内容错乱）：**
 
@@ -358,8 +366,8 @@ push 成功后写入 `<changelog.outputDir>/release-manifest.json`：
 读取 manifest 中各仓库的 `range`，依次执行：
 
 ```bash
-git -C "<repo_path>" log <range> --oneline --no-merges
-git -C "<repo_path>" log <range> --oneline --merges
+git -C "<repo_path>" log <range> --format="=== %h ===%n%B" --no-merges
+git -C "<repo_path>" log <range> --format="=== %h ===%n%B" --merges
 git -C "<repo_path>" diff <range> --stat
 ```
 
@@ -567,6 +575,38 @@ Changelog: <outputDir>/changelog-<new_tag>.html
 选"更换群"时：追加输入框填写新 chat_id，更新 config。
 选"不发送"时：流程结束。
 
+### Phase 3.5b：卡片预览确认（发送前最后一道关卡）
+
+**在构建 sections 和参数文件之后、调用 `send_release_card_with_mentions` 之前**，必须展示预览并等待用户确认：
+
+```
+━━━ 卡片预览 ━━━
+版本: <new_tag>
+日期: YYYY-MM-DD
+
+<按 sections 展示完整文本，每条带 @ 和 🔗 状态>
+
+新功能:
+  • <描述 A>  🔗 飞书任务（<task_id 前 8 位>）@ <open_id>
+  • <描述 B>  （无关联任务，不 @）
+
+修复:
+  • <描述 C>  🔗 飞书任务（<task_id 前 8 位>）@ <open_id>
+
+图片来源: <mascot 参考图 → OpenAI 生成 / 本地图片 / 无图片>
+
+[请确认]
+  ● 发送
+  ○ 修改内容
+  ○ 取消
+```
+
+- **发送**：立即调用 `send_release_card_with_mentions`
+- **修改内容**：让用户给出 diff（如"把描述 A 改成 xxx"、"去掉修复的第一条"），修改后重新预览
+- **取消**：不发送卡片，不影响已完成的 commit/tag/push（发版本身已完成）
+
+**此步骤不能跳过**，即使 BOT_AUTO_EXECUTE 模式也要展示预览（仅跳过 Phase 2 版本号确认）。
+
 ### 构建并发送卡片（默认带 @ 关注人）
 
 新版统一命令 `send_release_card_with_mentions` 一站式完成：组合 sections → 查每条对应任务的 @ open_id → 调用 OpenAI 随机生成发版图（或上传本地图片）→ 构建卡片 → 发送。
@@ -591,9 +631,14 @@ Changelog: <outputDir>/changelog-<new_tag>.html
 
 **关联 task_id 的来源（按优先级）**：
 
-1. **merge commit 分支名** — `feat/feishu-XXXXXXXX` 中的 `XXXXXXXX` 就是 task_id 前 8 位（命令支持短前缀自动补全）
-2. **文本匹配** — 对没有 merge commit 关联的直接 commit，调用 `list_tasks` 拉本次发版前后的飞书任务（todo + done 各 100 条），根据 changelog 描述跟任务 summary 做语义匹配
-3. **没匹配到** — 省略 task_id 字段，该条不 @
+1. **commit body `Feishu-Task:` 字段** — 直接提取完整 URL，无需调用 `list_tasks`（最高优先级，来自 Phase 1.3 的 `--format="=== %h ===%n%B"`）
+2. **merge commit 分支名** — `feat/feishu-XXXXXXXX` 中的 `XXXXXXXX` 就是 task_id 前 8 位（命令支持短前缀自动补全）
+3. **没匹配到** — 省略 task_id 字段，该条不 @、不带飞书链接、不阻断流程
+
+**降级规则（关键）**：
+- `entries[].task_id` 缺失时：不查关注人、不 @、不拼飞书任务链接、标题不带 "🔗 飞书任务"
+- 整个发送流程不报错、不询问、不阻断
+- 调用 `send_release_card_with_mentions` 时，缺失 task_id 的 entry 在 `task_mentions` 中为 `null`，正常发送
 
 写作规则同前：每条描述独立一行，不加 `•` 前缀，无该类别整段省略。
 
@@ -670,7 +715,7 @@ PYTHONIOENCODING=utf-8 python3 "${CLAUDE_PLUGIN_ROOT}/scripts/feishu_api.py" sen
 
 若用户明确不需要 @ 关注人，或本次发版没有任何能关联的飞书任务，走旧两步流程：
 
-1. 拼 lark_md 字符串 content（每条描述独立一行）
+1. 拼 lark_md 字符串 content（每条描述独立一行，无 task_id 的条目不附带链接）
 2. 调用 `build_release_card` 构建卡片，再调用 `send_card` 发送
 
 ```bash

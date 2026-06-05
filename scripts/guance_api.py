@@ -70,9 +70,54 @@ def _secure_write(path: pathlib.Path, content: str) -> None:
         pass
 
 
+# ISO 8601 带时区正则：2026-06-04T13:30:00+08:00 或 2026-06-04T13:30:00Z
+_ISO8601_TZ_RE = re.compile(
+    r'^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}'
+    r'([+-]\d{2}:\d{2}|Z)$'
+)
+
+
+def validate_iso8601_time(t: str) -> tuple[bool, str]:
+    """校验是否为合法 ISO 8601 带时区时间。
+    返回 (is_valid, error_reason)。
+    合法格式：2026-06-04T13:30:00+08:00 或 2026-06-04T13:30:00Z
+    """
+    t = t.strip()
+    if not _ISO8601_TZ_RE.match(t):
+        if 'T' not in t:
+            return False, "GUANCE_TIME_INVALID:expected ISO 8601 format (missing 'T' separator)"
+        if not re.search(r'[+-]\d{2}:\d{2}$', t) and not t.endswith('Z'):
+            return False, "GUANCE_TIME_INVALID:missing timezone offset (expected +08:00 or Z)"
+        return False, "GUANCE_TIME_INVALID:expected ISO 8601 format (YYYY-MM-DDTHH:MM:SS+08:00)"
+    return True, ""
+
+
+def parse_iso8601_time(t: str) -> int:
+    """解析 ISO 8601 带时区时间字符串 → 毫秒时间戳（UTC）。"""
+    t = t.strip()
+    # 处理末尾时区
+    if t.endswith('Z'):
+        dt_str = t[:-1]
+        tz = timezone.utc
+    else:
+        # +08:00 格式
+        m = re.search(r'([+-]\d{2}):(\d{2})$', t)
+        if m:
+            dt_str = t[:m.start()]
+            offset_h = int(m.group(1))
+            offset_m = int(m.group(2)) * (1 if offset_h >= 0 else -1)
+            tz = timezone(timedelta(hours=offset_h, minutes=offset_m))
+        else:
+            raise ValueError(f"无法解析时区：'{t}'")
+
+    dt = datetime.strptime(dt_str, "%Y-%m-%dT%H:%M:%S")
+    dt = dt.replace(tzinfo=tz)
+    return int(dt.timestamp() * 1000)
+
+
 def parse_time(t: str) -> int:
     """时间字符串 → 毫秒时间戳（UTC）。
-    支持：'now'、'1h'、'30m'、'2d'、'2024-01-01 09:00'
+    支持：'now'、'1h'、'30m'、'2d'、'2024-01-01 09:00'、ISO 8601 带时区
     """
     t = t.strip()
     if t == "now":
@@ -86,6 +131,10 @@ def parse_time(t: str) -> int:
         offset = days * 86400 + hours * 3600 + minutes * 60
         return int((time.time() - offset) * 1000)
 
+    # ISO 8601 带时区（优先）
+    if 'T' in t and (t.endswith('Z') or re.search(r'[+-]\d{2}:\d{2}$', t)):
+        return parse_iso8601_time(t)
+
     # 绝对时间（本地时间）
     for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M", "%Y-%m-%dT%H:%M:%S", "%Y-%m-%dT%H:%M"):
         try:
@@ -96,7 +145,7 @@ def parse_time(t: str) -> int:
         except ValueError:
             continue
 
-    raise ValueError(f"无法解析时间：'{t}'，支持格式：'1h'、'30m'、'2024-01-01 09:00'")
+    raise ValueError(f"无法解析时间：'{t}'，支持格式：'1h'、'30m'、'2024-01-01 09:00'、'2026-06-04T13:30:00+08:00'")
 
 
 def fmt_ts(ms: int) -> str:
@@ -379,6 +428,138 @@ def query_errors(start: str, end: str, limit: int = 500) -> dict:
     }
 
 
+def query_errors_silent(start: str, end: str, interfaces: list[str] | None = None, limit: int = 500) -> dict:
+    """静默模式查询：先校验时间格式，再执行 Step A/B 策略。
+
+    返回：
+    - 正常：{"return_token": "summary_returned", "summary": {...}, ...}
+    - 时间格式错误：{"return_token": "GUANCE_TIME_INVALID:<reason>"}
+    - 未配置：{"return_token": "GUANCE_NOT_CONFIGURED"}
+    - 网络错误：{"return_token": "GUANCE_ERROR:<reason>"}
+    - 无数据：{"return_token": "GUANCE_NO_DATA"}
+    """
+    # 时间格式校验
+    ok, err = validate_iso8601_time(start)
+    if not ok:
+        return {"return_token": err}
+    ok, err = validate_iso8601_time(end)
+    if not ok:
+        return {"return_token": err}
+
+    # 配置检查
+    try:
+        cfg = _get_cfg()
+    except RuntimeError:
+        return {"return_token": "GUANCE_NOT_CONFIGURED"}
+
+    start_ms = parse_iso8601_time(start)
+    end_ms = parse_iso8601_time(end)
+
+    # Step A：带接口过滤的精准查询（查询所有请求/响应，不只是 error）
+    step_a_hit = False
+    all_rows: list[dict] = []
+    if interfaces:
+        for iface in interfaces:
+            # 查询该接口的所有日志（所有 status 级别），带回 request/response payload
+            q = (
+                f"L::re('{LOG_SOURCE}')"
+                f"{{requestUri =~ /{re.escape(iface)}/}}"
+                f" LIMIT {limit}"
+            )
+            try:
+                rows = _dql(cfg, q, start_ms, end_ms, limit)
+                all_rows.extend(rows)
+            except Exception:
+                continue
+        if all_rows:
+            step_a_hit = True
+
+    # Step B：全量查询（不带接口过滤），取 top 高频
+    step_b_fallback = False
+    if not all_rows:
+        step_b_fallback = True
+        try:
+            q = f"L::re('{LOG_SOURCE}') LIMIT {limit}"
+            all_rows = _dql(cfg, q, start_ms, end_ms, limit)
+        except Exception as e:
+            return {"return_token": f"GUANCE_ERROR:{e}"}
+
+    if not all_rows:
+        return {"return_token": "GUANCE_NO_DATA"}
+
+    # ── 聚合分析（包含请求/响应 payload） ──
+    by_status_code: dict[str, int] = {}
+    by_path: dict[str, int] = {}
+    by_message: dict[str, int] = {}
+
+    high_freq: list[dict] = []  # 高频报错详情
+
+    for row in all_rows:
+        msg_raw = row.get("message") or row.get("msg") or ""
+        parsed = _parse_message(msg_raw)
+
+        req_uri = parsed.get("requestUri") or parsed.get("requestUrl") or ""
+        path = _normalize_url(req_uri)
+        if path:
+            by_path[path] = by_path.get(path, 0) + 1
+
+        code = str(parsed.get("status_code") or parsed.get("statusCode") or "")
+        if code:
+            by_status_code[code] = by_status_code.get(code, 0) + 1
+
+        err_text = (
+            parsed.get("error") or parsed.get("detail") or
+            parsed.get("_raw") or
+            (msg_raw if not msg_raw.startswith("{") else "")
+        )
+        if err_text:
+            key = _cluster_message(err_text)
+            by_message[key] = by_message.get(key, 0) + 1
+
+    # 构建高频报错详情（含 request/response payload）
+    top_paths = sorted(by_path.items(), key=lambda x: -x[1])[:10]
+    top_path_set = {p for p, _ in top_paths}
+    path_samples: dict[str, list[dict]] = {}
+    for row in all_rows:
+        msg_raw = row.get("message") or row.get("msg") or ""
+        parsed = _parse_message(msg_raw)
+        req_uri = parsed.get("requestUri") or parsed.get("requestUrl") or ""
+        path = _normalize_url(req_uri)
+        if path in top_path_set:
+            if path not in path_samples:
+                path_samples[path] = []
+            if len(path_samples[path]) < 3:
+                path_samples[path].append({
+                    "status_code": parsed.get("status_code") or parsed.get("statusCode") or "",
+                    "request_payload": parsed.get("request") or parsed.get("requestBody") or "",
+                    "response_payload": parsed.get("response") or parsed.get("responseBody") or "",
+                })
+
+    for path, count in top_paths:
+        entry: dict = {"path": path, "count": count}
+        if path in path_samples:
+            entry["samples"] = path_samples[path]
+        high_freq.append(entry)
+
+    return {
+        "return_token": "summary_returned",
+        "step_a_hit": step_a_hit,
+        "step_b_fallback": step_b_fallback,
+        "time_range": {"start": start, "end": end},
+        "source": LOG_SOURCE,
+        "total_count": len(all_rows),
+        "by_status_code": [
+            {"code": k, "count": v}
+            for k, v in sorted(by_status_code.items(), key=lambda x: -x[1])
+        ],
+        "high_freq": high_freq,
+        "by_message": [
+            {"message": k, "count": v}
+            for k, v in sorted(by_message.items(), key=lambda x: -x[1])[:10]
+        ],
+    }
+
+
 # ── CLI ───────────────────────────────────────────────────────────────────────
 
 def main():
@@ -400,6 +581,15 @@ def main():
                 raise RuntimeError("用法：query_errors <start> <end> [--limit N]")
             limit = int(args[args.index("--limit") + 1]) if "--limit" in args else 500
             out = query_errors(args[1], args[2], limit)
+        elif cmd == "query_errors_silent":
+            if len(args) < 3:
+                raise RuntimeError("用法：query_errors_silent <start> <end> [--interfaces json_array] [--limit N]")
+            limit = int(args[args.index("--limit") + 1]) if "--limit" in args else 500
+            interfaces = None
+            if "--interfaces" in args:
+                idx = args.index("--interfaces")
+                interfaces = json.loads(args[idx + 1])
+            out = query_errors_silent(args[1], args[2], interfaces, limit)
         else:
             raise RuntimeError(f"未知命令：{cmd}")
 
