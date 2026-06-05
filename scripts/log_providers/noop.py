@@ -9,6 +9,12 @@ import json
 import sys
 
 
+def query_errors_silent(
+    start: str, end: str, interfaces: list | None = None
+) -> dict:
+    return {"status": "not_configured"}
+
+
 def main() -> None:
     print(json.dumps({"status": "not_configured"}))
 
