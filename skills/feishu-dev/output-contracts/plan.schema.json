@@ -1,0 +1,51 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "feishu-dev/plan",
+  "description": "Phase 2 Plan 输出契约 — AI 输出 Plan 时必须包含的字段",
+  "type": "object",
+  "required": ["task_title", "task_link", "target_files", "scope", "changes"],
+  "properties": {
+    "task_title": {
+      "type": "string",
+      "description": "飞书任务标题"
+    },
+    "task_link": {
+      "type": "string",
+      "pattern": "^https://",
+      "description": "飞书任务链接"
+    },
+    "target_files": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "type": "string" },
+      "description": "目标文件路径列表"
+    },
+    "scope": {
+      "type": "string",
+      "enum": ["frontend_only", "backend_only", "fullstack"],
+      "description": "改动范围"
+    },
+    "changes": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": ["description"],
+        "properties": {
+          "description": { "type": "string", "description": "改动点一句话描述" },
+          "file": { "type": "string", "description": "对应文件（可选）" }
+        }
+      },
+      "description": "要改的内容列表（✂ 前缀）"
+    },
+    "no_touch": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "明确不改的内容（✗ 前缀，可选）"
+    },
+    "log_summary": {
+      "type": ["string", "null"],
+      "description": "观测云 / log-provider 日志摘要，null 表示无日志数据"
+    }
+  }
+}

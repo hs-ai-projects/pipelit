@@ -92,7 +92,7 @@ console.log('done');
 | `feishu-bot` | "配置飞书机器人"、"webhook 怎么配"、"机器人收不到事件"、"feishu-bot setup" | Webhook 服务器安装、飞书应用配置、GitLab Token、排障手册 |
 | `release` | "发版"、"打 tag"、"release"、"准备上线" | 版本发布全流程 |
 | `changelog` | "changelog"、"更新日志"、"发版说明" | 生成版本更新文档 |
-| `guance-log-analysis` | "观测云"、"查日志"、"查报错"、"接口报错"、"分析错误"、"guance logs" | 观测云 ads-backend 错误日志分析 |
+| `guance-log-analysis` | "观测云"、"查日志"、"查报错"、"接口报错"、"分析错误"、"guance logs" | 直接分析观测云日志（单独使用时）；feishu-dev 内部已通过 log-provider 自动调用 |
 
 ## 任务分级（L1 / L2 / L3）
 
@@ -138,31 +138,116 @@ console.log('done');
 
 ---
 
+## 决策树（用户输入 → Skill 路由）
+
+```
+用户说了什么？
+│
+├─ 飞书任务 ID / URL / "帮我做飞书任务" / "列出任务"
+│   └─→ feishu-dev
+│         ├─ 任务量少、描述清晰、改动 ≤ 3 文件 → 自动判 L2（改代码）
+│         └─ 描述模糊 / 跨模块 / 文件 > 5       → 自动判 L3（仅分析）
+│
+├─ "发版" / "打 tag" / "release" / "准备上线" / "继续发版"
+│   └─→ release
+│
+├─ "changelog" / "更新日志" / "发版说明"
+│   └─→ changelog
+│
+├─ "配置飞书机器人" / "webhook 怎么配" / "机器人收不到事件"
+│   └─→ feishu-bot
+│
+├─ "观测云" / "查日志" / "查报错"（单独使用，非 feishu-dev 内部）
+│   └─→ guance-log-analysis
+│
+└─ 不确定 / 混合场景
+    └─→ 展示本路由指南，让用户选择
+```
+
+---
+
+## Skill 间数据流
+
+```
+feishu-dev ──────────────────────────────────────────────────────────────┐
+  │                                                                        │
+  │ Phase 1.1: get_task_full()                                            │
+  │   → 任务详情 + 附件图片 + 视频路径                                       │
+  │                                                                        │
+  │ Phase 1.8d: log_providers/dispatch.py                                  │
+  │   → 读 config.logProvider → guance.py / noop.py                       │
+  │   ← log_summary（null = 静默跳过）                                      │
+  │                                                                        │
+  │ Phase 2: Plan（含 log_summary）→ 用户确认                               │
+  │                                                                        │
+  │ Phase 3.6: commit（Feishu-Task: <url> 写入 commit body）               │
+  │                  ↓                                                     │
+  │           release 的 Phase 1.3 git log 读取这个 body                   │
+  │           → changelog entry 自动关联飞书任务链接                         │
+  │                                                                        │
+  └─→ release ──────────────────────────────────────────────────────────→ changelog
+        │                                                                  │
+        │ Phase 3.6: 读 git log --format="%B"                             │
+        │   → 提取 Feishu-Task: URL                                       │
+        │   → 关联任务 → @ 关注人 → 发版卡片                               │
+        │                                                                  │
+        │ Phase 卡片: card_builder.py                                      │
+        │   → 读 config.cardFeatures                                       │
+        │   → 决定是否附任务链接 / @ / 图片                                  │
+        │                                                                  │
+        └─→ 发版卡片 → 飞书群                                               │
+                                                                          │
+        changelog 读 release-manifest.json                                │
+          → 生成 CHANGELOG.md / release notes                             │
+```
+
+**跨 skill 的关键数据契约**：
+
+| 数据 | 生产方 | 消费方 | 存储位置 |
+|------|--------|--------|---------|
+| `Feishu-Task: <url>` | feishu-dev Phase 3.6 commit | release Phase 1.3 | git commit body |
+| `release-manifest.json` | release Phase 3.5 | changelog | `<repo>/changelog-workspace/` |
+| `.feishu-dev-state.json` | feishu-dev 各 Phase | feishu-dev RESUME-CHECK | 工作目录根 |
+| `.release-state.json` | release Phase 3.1 | release resume | 工作目录根 |
+| `decision-logs/` | feishu-dev Phase 1.3 | 审计/diff | `~/.claude/pipelit/decision-logs/` |
+
+---
+
 ## 快速判断
 
 ```
-飞书任务 ID / URL                → feishu-dev（自动判断 L2 或 L3）
-改动文件 ≤ 3，需求清晰           → feishu-dev 走 L2 完整开发流程
-改动文件 > 5，或逻辑复杂         → feishu-dev 走 L3 只输出分析报告
-只生成文本/更新配置/写 changelog  → release（L1）
+飞书任务 ID / URL                        → feishu-dev（自动判断 L2 或 L3）
+改动文件 ≤ 3，需求清晰                   → feishu-dev 走 L2 完整开发流程
+改动文件 > 5，或逻辑复杂                 → feishu-dev 走 L3 只输出分析报告
+只生成文本 / 更新配置 / 写 changelog     → release（L1）
 ```
 
 ## 配置文件
 
-所有配置统一存储在 `~/.claude/pipelit/config.json`（跨工作目录共享），一次配置全局生效：
+> 详细三层说明见 `docs/config-hierarchy.md`。
+
+配置分三层，优先级 L3 > L2 > L1：
+
+| 层 | 位置 | 内容 |
+|----|------|------|
+| L1 用户级 | `~/.claude/pipelit/config.json` | 飞书凭据、观测云凭据、logProvider、cardFeatures |
+| L2 项目级 | `<cwd>/.pipelit/config.json` | 项目路径、发版配置 |
+| L3 仓库级 | `<repo>/.pipelit.json`（可选） | precheck 命令、特殊规则 |
 
 ```json
+// L1 示例
 {
-  "app_id": "飞书 App ID",
-  "app_secret": "飞书 App Secret",
-  "frontend_path": "前端项目路径",
-  "backend_path": "后端项目路径",
-  "release": { "repos": [...], "changelog": {...}, ... }
+  "app_id": "cli_xxxx",
+  "app_secret": "xxxx",
+  "logProvider": "guance",
+  "cardFeatures": { "linkTask": true, "atFollower": true, "image": true }
 }
 ```
 
 | 字段 | 用途 | 写入时机 |
 |------|------|---------|
 | `app_id` / `app_secret` | 飞书凭据 | 首次使用飞书 skill 时引导 |
-| `frontend_path` / `backend_path` | 项目路径 | 首次 feishu-dev 时引导 |
-| `release` | 发版配置 | 首次 release 时引导 |
+| `frontend_path` / `backend_path` | 项目路径（L2） | 首次 feishu-dev 时引导 |
+| `release` | 发版配置（L2） | 首次 release 时引导 |
+| `logProvider` | 日志源：guance / noop | 可选，默认 guance |
+| `cardFeatures` | 卡片功能开关 | 可选，默认全 true |

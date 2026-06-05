@@ -1,0 +1,65 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "feishu-dev/completion",
+  "description": "Phase 4 完成报告输出契约",
+  "type": "object",
+  "required": ["task_title", "task_link", "summary", "changed_files", "commit_hash", "branch", "pushed"],
+  "properties": {
+    "task_title": {
+      "type": "string",
+      "description": "飞书任务标题"
+    },
+    "task_link": {
+      "type": "string",
+      "pattern": "^https://",
+      "description": "飞书任务链接"
+    },
+    "summary": {
+      "type": "string",
+      "description": "做了什么（一句话概述）"
+    },
+    "changed_files": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": ["path"],
+        "properties": {
+          "path": { "type": "string" },
+          "additions": { "type": "integer", "minimum": 0 },
+          "deletions": { "type": "integer", "minimum": 0 }
+        }
+      },
+      "description": "改动的文件列表（含 +N -M 行数）"
+    },
+    "verification": {
+      "type": "object",
+      "properties": {
+        "command": { "type": "string" },
+        "passed": { "type": "boolean" }
+      },
+      "description": "验证命令及结果（可选）"
+    },
+    "commit_hash": {
+      "type": "string",
+      "minLength": 7,
+      "description": "提交 hash（至少 7 位短 hash）"
+    },
+    "commit_message": {
+      "type": "string",
+      "description": "commit message 首行"
+    },
+    "branch": {
+      "type": "string",
+      "description": "所在分支名"
+    },
+    "pushed": {
+      "type": "boolean",
+      "description": "是否已推送到远端"
+    },
+    "feishu_completed": {
+      "type": "boolean",
+      "description": "飞书任务是否已标记完成"
+    }
+  }
+}
