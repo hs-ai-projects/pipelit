@@ -290,6 +290,30 @@ with tempfile.TemporaryDirectory() as tmpdir_set:
     finally:
         os.chdir(_old_cwd_set)
 
+# ─── 17. config extends 支持 ─────────────────────────────────────────────────
+print("\n=== 17. config extends 支持（config-extends）===")
+with tempfile.TemporaryDirectory() as dir_a, tempfile.TemporaryDirectory() as dir_b:
+    # dir_a 是 canonical（主配置）
+    fa._write_project_config({"app_id": "cli_main", "frontend_path": dir_a}, cwd=dir_a)
+
+    # dir_b 放 extends 指针
+    ptr_file = pathlib.Path(dir_b) / ".pipelit" / "config.json"
+    ptr_file.parent.mkdir(parents=True, exist_ok=True)
+    canonical_path = str(fa._project_config_file(cwd=dir_a))
+    ptr_file.write_text(json.dumps({"extends": canonical_path}), encoding="utf-8")
+
+    # _read_project_config 从 dir_b 读，应该得到 dir_a 的内容
+    result = fa._read_project_config(cwd=dir_b)
+    check("extends: 从指针目录读到 canonical 内容", result.get("app_id") == "cli_main")
+    check("extends: 不含 extends 字段本身", "extends" not in result)
+
+    # _write_project_config 从 dir_b 写，应该写到 dir_a
+    fa._write_project_config({"app_id": "cli_updated"}, cwd=dir_b)
+    canonical_content = fa._read_project_config(cwd=dir_a)
+    check("extends: 写入操作路由到 canonical", canonical_content.get("app_id") == "cli_updated")
+    ptr_content = json.loads(ptr_file.read_text(encoding="utf-8"))
+    check("extends: 指针文件仍只含 extends 字段", list(ptr_content.keys()) == ["extends"])
+
 # ─── 汇总 ─────────────────────────────────────────────────────────────────────
 total = len(results)
 passed = sum(1 for _, p in results if p)

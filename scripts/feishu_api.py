@@ -278,18 +278,35 @@ def _project_config_file(cwd: str | None = None) -> pathlib.Path:
     return base / ".pipelit" / "config.json"
 
 
-def _read_project_config(cwd: str | None = None) -> dict:
+def _resolve_canonical_config(cwd: str | None = None) -> pathlib.Path:
+    """返回 canonical 配置文件路径：若当前 cwd 的配置有 extends 字段，跟随一层。"""
     f = _project_config_file(cwd)
+    if f.exists():
+        try:
+            raw = json.loads(f.read_text(encoding="utf-8"))
+            target = raw.get("extends")
+            if target:
+                return pathlib.Path(target)
+        except Exception:
+            pass
+    return f
+
+
+def _read_project_config(cwd: str | None = None) -> dict:
+    f = _resolve_canonical_config(cwd)
     if not f.exists():
         return {}
     try:
-        return json.loads(f.read_text(encoding="utf-8"))
+        data = json.loads(f.read_text(encoding="utf-8"))
+        # 过滤掉 extends 字段，调用方不需要感知
+        data.pop("extends", None)
+        return data
     except Exception:
         return {}
 
 
 def _write_project_config(data: dict, cwd: str | None = None) -> None:
-    f = _project_config_file(cwd)
+    f = _resolve_canonical_config(cwd)
     f.parent.mkdir(parents=True, exist_ok=True)
     _secure_write(f, json.dumps(data, indent=2, ensure_ascii=False))
 
