@@ -146,8 +146,8 @@ precheck → dry-run 预览 → 一次确认 → 全自动执行
 
 | 层 | 位置 | 内容 |
 |----|------|------|
-| L1 用户级 | `~/.claude/pipelit/config.json` | 飞书/观测云凭据、logProvider、cardFeatures |
-| L2 项目级 | `<cwd>/.pipelit/config.json` | 项目路径、发版配置（可提交进仓库） |
+| L1 用户级 | `~/.claude/pipelit/config.json` | `user_id`（跨项目全局） |
+| L2 项目级 | `<cwd>/.pipelit/config.json` | `app_id`、`app_secret`、`frontend_path`、`backend_path`、`release`、`bot` |
 | L3 仓库级 | `<repo>/.pipelit.json`（可选） | precheck 命令、特殊规则 |
 
 完整说明见 [docs/config-hierarchy.md](docs/config-hierarchy.md)。
