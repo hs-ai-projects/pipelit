@@ -287,9 +287,9 @@ def _maybe_create_extends_pointer(cfg: dict) -> None:
     if ptr_file.exists():
         try:
             existing = json.loads(ptr_file.read_text(encoding="utf-8"))
-            if "extends" not in existing and len(existing) > 1:
+            if any(k != "extends" for k in existing):
                 return
-        except Exception:
+        except (json.JSONDecodeError, OSError):
             pass
 
     ptr_file.parent.mkdir(parents=True, exist_ok=True)
