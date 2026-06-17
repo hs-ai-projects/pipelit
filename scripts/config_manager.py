@@ -236,8 +236,6 @@ def set_field(field: str, value: str, cwd: str | None = None) -> dict:
                     "message": f"guance.api_key 和 guance.workspace_id 必须同时存在，当前缺少 {missing}"}
         return guance_api.save_config(api_key, ws_id)
 
-    return {"error": "unsupported_field", "field": field}
-
 
 # ── CLI ───────────────────────────────────────────────────────────────────────
 
