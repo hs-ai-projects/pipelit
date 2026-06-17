@@ -128,6 +128,18 @@ with tempfile.TemporaryDirectory() as tmpdir2:
     empty = fa._read_project_config(cwd="/tmp/nonexistent_9999")
     check("_read_project_config 目录不存在时返回空 dict", empty == {})
 
+# ─── 10. save_config 写 L2 ───────────────────────────────────────────────────
+print("\n=== 10. save_config 写 L2（config-layer-write-fix）===")
+with tempfile.TemporaryDirectory() as tmpdir3:
+    os.chdir(tmpdir3)
+    fa.save_config("cli_test_app", "test_secret")
+    l2 = fa._read_project_config(cwd=tmpdir3)
+    check("save_config 写入 L2 app_id", l2.get("app_id") == "cli_test_app")
+    check("save_config 写入 L2 app_secret", l2.get("app_secret") == "test_secret")
+    # L1 不应被写入 app_id
+    l1 = fa.read_config() or {}
+    check("save_config 不写 L1 app_id", l1.get("app_id") != "cli_test_app")
+
 # ─── 汇总 ─────────────────────────────────────────────────────────────────────
 total = len(results)
 passed = sum(1 for _, p in results if p)

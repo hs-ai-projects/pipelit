@@ -220,13 +220,13 @@ def read_config() -> dict | None:
 
 
 def save_config(app_id: str, app_secret: str) -> dict:
-    USER_CONFIG_DIR.mkdir(parents=True, exist_ok=True)
-    cfg = read_config() or {}
+    cfg = _read_project_config()
     cfg["app_id"] = app_id
     cfg["app_secret"] = app_secret
-    _secure_write(CONFIG_FILE, json.dumps(cfg, indent=2))
+    _write_project_config(cfg)
     TOKEN_CACHE_FILE.unlink(missing_ok=True)
-    return {"success": True, "message": f"凭据已保存到 {CONFIG_FILE}"}
+    project_file = _project_config_file()
+    return {"success": True, "message": f"凭据已保存到 {project_file}"}
 
 
 def check_config() -> dict:
