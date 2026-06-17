@@ -4,7 +4,6 @@ Pipelit 配置总览与修改工具。
 
 Usage:
   python3 config_manager.py overview [feishu|release|guance|hooks]
-  python3 config_manager.py set <field_path> <value>
 """
 
 import sys
