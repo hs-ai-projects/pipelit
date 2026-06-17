@@ -274,19 +274,22 @@ def save_project_config(frontend_path: str = None, backend_path: str = None) -> 
 
 # ── L2 Project Config Helpers ─────────────────────────────────────────────────
 
-def _project_config_file(cwd=None) -> pathlib.Path:
+def _project_config_file(cwd: str | None = None) -> pathlib.Path:
     base = pathlib.Path(cwd) if cwd else pathlib.Path.cwd()
     return base / ".pipelit" / "config.json"
 
 
-def _read_project_config(cwd=None) -> dict:
+def _read_project_config(cwd: str | None = None) -> dict:
     f = _project_config_file(cwd)
     if not f.exists():
         return {}
-    return json.loads(f.read_text(encoding="utf-8"))
+    try:
+        return json.loads(f.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
 
 
-def _write_project_config(data: dict, cwd=None) -> None:
+def _write_project_config(data: dict, cwd: str | None = None) -> None:
     f = _project_config_file(cwd)
     f.parent.mkdir(parents=True, exist_ok=True)
     _secure_write(f, json.dumps(data, indent=2, ensure_ascii=False))
