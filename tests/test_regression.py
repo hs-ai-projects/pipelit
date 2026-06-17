@@ -314,6 +314,32 @@ with tempfile.TemporaryDirectory() as dir_a, tempfile.TemporaryDirectory() as di
     ptr_content = json.loads(ptr_file.read_text(encoding="utf-8"))
     check("extends: 指针文件仍只含 extends 字段", list(ptr_content.keys()) == ["extends"])
 
+# ─── 18. save_project_config 自动创建 extends 指针 ───────────────────────────
+print("\n=== 18. save_project_config extends 指针（config-extends）===")
+import tempfile, os
+with tempfile.TemporaryDirectory() as front, tempfile.TemporaryDirectory() as back:
+    _old_cwd18 = os.getcwd()
+    try:
+        os.chdir(front)
+        fa.save_project_config(frontend_path=front, backend_path=back)
+    finally:
+        os.chdir(_old_cwd18)
+
+    # front 应有完整配置
+    front_cfg = fa._read_project_config(cwd=front)
+    check("save_project_config: canonical 有 frontend_path", front_cfg.get("frontend_path") == front)
+    check("save_project_config: canonical 有 backend_path", front_cfg.get("backend_path") == back)
+
+    # back 应有 extends 指针指向 front
+    back_ptr_file = pathlib.Path(back) / ".pipelit" / "config.json"
+    check("save_project_config: 指针文件存在于 backend 目录", back_ptr_file.exists())
+    back_ptr = json.loads(back_ptr_file.read_text(encoding="utf-8"))
+    check("save_project_config: 指针含 extends 字段", "extends" in back_ptr)
+
+    # 从 back 目录读，应得到完整配置
+    back_cfg = fa._read_project_config(cwd=back)
+    check("save_project_config: 从 backend 读到完整配置", back_cfg.get("frontend_path") == front)
+
 # ─── 汇总 ─────────────────────────────────────────────────────────────────────
 total = len(results)
 passed = sum(1 for _, p in results if p)

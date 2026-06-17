@@ -257,6 +257,45 @@ def check_project_config() -> dict:
     }
 
 
+def _maybe_create_extends_pointer(cfg: dict) -> None:
+    """若 cfg 同时含 frontend_path 和 backend_path，为非 cwd 的那个目录创建 extends 指针。
+
+    规则：canonical 是 _resolve_canonical_config() 指向的文件（当前 cwd 的主配置）；
+    另一个目录若已有实质配置（不只是 extends 字段）则不覆盖。
+    """
+    fp = cfg.get("frontend_path")
+    bp = cfg.get("backend_path")
+    if not fp or not bp:
+        return
+
+    canonical = _resolve_canonical_config()  # 当前 cwd 的 canonical 文件
+    fp_path = pathlib.Path(fp)
+    bp_path = pathlib.Path(bp)
+
+    # 判断另一个目录（非当前 canonical 所在侧）
+    canonical_is_under_fp = False
+    try:
+        canonical.relative_to(fp_path)
+        canonical_is_under_fp = True
+    except ValueError:
+        pass
+
+    other = bp_path if canonical_is_under_fp else fp_path
+    ptr_file = other / ".pipelit" / "config.json"
+
+    # 若另一个目录已有实质配置则不覆盖
+    if ptr_file.exists():
+        try:
+            existing = json.loads(ptr_file.read_text(encoding="utf-8"))
+            if "extends" not in existing and len(existing) > 1:
+                return
+        except Exception:
+            pass
+
+    ptr_file.parent.mkdir(parents=True, exist_ok=True)
+    _secure_write(ptr_file, json.dumps({"extends": str(canonical)}, indent=2, ensure_ascii=False))
+
+
 def save_project_config(frontend_path: str = None, backend_path: str = None) -> dict:
     cfg = _read_project_config()
     if frontend_path:
@@ -264,6 +303,7 @@ def save_project_config(frontend_path: str = None, backend_path: str = None) -> 
     if backend_path:
         cfg["backend_path"] = backend_path.rstrip("/\\")
     _write_project_config(cfg)
+    _maybe_create_extends_pointer(cfg)
     return {
         "success": True,
         "frontend_path": cfg.get("frontend_path"),
