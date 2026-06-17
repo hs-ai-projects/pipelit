@@ -254,6 +254,42 @@ with tempfile.TemporaryDirectory() as tmpdir_cm:
     check("overview feishu section 不含 release", "release.chatId" not in r_feishu.get("l2", {}))
     check("overview feishu section 含 app_id", "app_id" in r_feishu.get("l2", {}))
 
+# ─── 16. config_manager set ──────────────────────────────────────────────────
+print("\n=== 16. config_manager set（config-skill）===")
+
+import tempfile, os
+with tempfile.TemporaryDirectory() as tmpdir_set:
+    _old_cwd_set = os.getcwd()
+    try:
+        os.chdir(tmpdir_set)
+
+        # set release.chatId
+        r = cm.set_field("release.chatId", "oc_new_chat")
+        check("set release.chatId 返回 success", r.get("success") is True)
+        l2 = cm.feishu_api._read_project_config(cwd=tmpdir_set)
+        check("set release.chatId 写入 L2", l2.get("release", {}).get("chatId") == "oc_new_chat")
+
+        # set bot.trigger_mode
+        r2 = cm.set_field("bot.trigger_mode", "spawn")
+        check("set bot.trigger_mode 返回 success", r2.get("success") is True)
+        l2b = cm.feishu_api._read_project_config(cwd=tmpdir_set)
+        check("set bot.trigger_mode 写入 L2", l2b.get("bot", {}).get("trigger_mode") == "spawn")
+
+        # set frontend_path
+        r3 = cm.set_field("frontend_path", tmpdir_set)
+        check("set frontend_path 返回 success", r3.get("success") is True)
+
+        # set 不支持字段返回 error
+        r4 = cm.set_field("unknown.field", "val")
+        check("set 不支持字段返回 error", r4.get("error") == "unsupported_field")
+
+        # set app_secret 无 app_id 时返回 pair_required
+        r5 = cm.set_field("app_secret", "new_secret")
+        check("set app_secret 无 app_id 返回 pair_required", r5.get("error") == "pair_required")
+
+    finally:
+        os.chdir(_old_cwd_set)
+
 # ─── 汇总 ─────────────────────────────────────────────────────────────────────
 total = len(results)
 passed = sum(1 for _, p in results if p)

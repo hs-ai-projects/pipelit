@@ -4,6 +4,7 @@ Pipelit 配置总览与修改工具。
 
 Usage:
   python3 config_manager.py overview [feishu|release|guance|hooks]
+  python3 config_manager.py set <field_path> <value>
 """
 
 import sys
@@ -148,6 +149,96 @@ def overview(cwd: str | None = None, section: str | None = None) -> dict:
     return result
 
 
+# ── set ───────────────────────────────────────────────────────────────────────
+
+SUPPORTED_FIELDS = frozenset({
+    "user_id",
+    "app_id", "app_secret",
+    "frontend_path", "backend_path",
+    "release.chatId", "release.feishuWikiUrl", "release.projectName",
+    "bot.notify_chat_id", "bot.trigger_mode",
+    "guance.api_key", "guance.workspace_id",
+})
+
+
+def set_field(field: str, value: str, cwd: str | None = None) -> dict:
+    if field not in SUPPORTED_FIELDS:
+        return {
+            "error": "unsupported_field",
+            "field": field,
+            "supported": sorted(SUPPORTED_FIELDS),
+        }
+
+    # user_id → L1
+    if field == "user_id":
+        cfg = feishu_api.read_config() or {}
+        cfg["user_id"] = value
+        feishu_api.USER_CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+        feishu_api._secure_write(feishu_api.CONFIG_FILE,
+                                  json.dumps(cfg, indent=2, ensure_ascii=False))
+        return {"success": True, "field": field, "value": value}
+
+    # app_id / app_secret → 成对写 L2
+    if field in ("app_id", "app_secret"):
+        l2 = feishu_api._read_project_config(cwd=cwd)
+        if field == "app_id":
+            app_id, app_secret = value, l2.get("app_secret", "")
+        else:
+            app_id, app_secret = l2.get("app_id", ""), value
+        if not app_id or not app_secret:
+            missing = "app_id" if not app_id else "app_secret"
+            return {"error": "pair_required",
+                    "message": f"app_id 和 app_secret 必须同时存在，当前缺少 {missing}，请先配置另一个字段"}
+        return feishu_api.save_config(app_id, app_secret)
+
+    # frontend_path / backend_path → L2
+    if field == "frontend_path":
+        return feishu_api.save_project_config(frontend_path=value)
+    if field == "backend_path":
+        return feishu_api.save_project_config(backend_path=value)
+
+    # release.* → L2
+    if field.startswith("release."):
+        key = field[len("release."):]
+        l2 = feishu_api._read_project_config(cwd=cwd)
+        release = l2.get("release") or {}
+        release[key] = value
+        l2["release"] = release
+        feishu_api._write_project_config(l2, cwd=cwd)
+        return {"success": True, "field": field, "value": value}
+
+    # bot.* → L2
+    if field.startswith("bot."):
+        key = field[len("bot."):]
+        l2 = feishu_api._read_project_config(cwd=cwd)
+        bot = l2.get("bot") or {}
+        bot[key] = value
+        l2["bot"] = bot
+        feishu_api._write_project_config(l2, cwd=cwd)
+        return {"success": True, "field": field, "value": value}
+
+    # guance.api_key / guance.workspace_id → 成对写 L2
+    if field in ("guance.api_key", "guance.workspace_id"):
+        g_file = guance_api._guance_config_file(cwd=cwd)
+        g_cfg: dict = {}
+        if g_file.exists():
+            try:
+                g_cfg = json.loads(g_file.read_text(encoding="utf-8"))
+            except Exception:
+                pass
+        if field == "guance.api_key":
+            api_key, ws_id = value, g_cfg.get("workspace_id", "")
+        else:
+            api_key, ws_id = g_cfg.get("api_key", ""), value
+        if not api_key or not ws_id:
+            missing = "guance.api_key" if not api_key else "guance.workspace_id"
+            return {"error": "pair_required",
+                    "message": f"guance.api_key 和 guance.workspace_id 必须同时存在，当前缺少 {missing}"}
+        return guance_api.save_config(api_key, ws_id)
+
+    return {"error": "unsupported_field", "field": field}
+
+
 # ── CLI ───────────────────────────────────────────────────────────────────────
 
 def main() -> None:
@@ -160,6 +251,15 @@ def main() -> None:
     if cmd == "overview":
         section = args[1] if len(args) > 1 else None
         print(json.dumps(overview(section=section), ensure_ascii=False, indent=2))
+    elif cmd == "set":
+        if len(args) < 3:
+            print(json.dumps({"error": "usage: set <field_path> <value>"}))
+            sys.exit(1)
+        field, value = args[1], args[2]
+        result = set_field(field, value)
+        print(json.dumps(result, ensure_ascii=False, indent=2))
+        if result.get("error"):
+            sys.exit(1)
     else:
         print(json.dumps({"error": f"unknown command: {cmd}"}))
         sys.exit(1)
