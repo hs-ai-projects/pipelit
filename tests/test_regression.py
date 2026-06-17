@@ -144,6 +144,43 @@ with tempfile.TemporaryDirectory() as tmpdir3:
     l1 = fa.read_config() or {}
     check("save_config 不写 L1 app_id", l1.get("app_id") != "cli_test_app")
 
+# ─── 11. save_project_config 写 L2 ──────────────────────────────────────────
+print("\n=== 11. save_project_config 写 L2（config-layer-write-fix）===")
+with tempfile.TemporaryDirectory() as tmpdir4:
+    _old_cwd4 = os.getcwd()
+    try:
+        os.chdir(tmpdir4)
+        fa.save_project_config(frontend_path="/proj/front", backend_path="/proj/back")
+    finally:
+        os.chdir(_old_cwd4)
+    l2 = fa._read_project_config(cwd=tmpdir4)
+    check("save_project_config 写 L2 frontend_path", l2.get("frontend_path") == "/proj/front")
+    check("save_project_config 写 L2 backend_path", l2.get("backend_path") == "/proj/back")
+
+# ─── 12. save_release_config / save_bot_config 写 L2 ────────────────────────
+print("\n=== 12. save_release_config / save_bot_config 写 L2（config-layer-write-fix）===")
+with tempfile.TemporaryDirectory() as tmpdir5:
+    _old_cwd5 = os.getcwd()
+    try:
+        os.chdir(tmpdir5)
+        fa.save_release_config(json.dumps({"projectName": "test-proj", "repos": []}))
+    finally:
+        os.chdir(_old_cwd5)
+    l2r = fa._read_project_config(cwd=tmpdir5)
+    check("save_release_config 写 L2 release.projectName",
+          l2r.get("release", {}).get("projectName") == "test-proj")
+
+with tempfile.TemporaryDirectory() as tmpdir6:
+    _old_cwd6 = os.getcwd()
+    try:
+        os.chdir(tmpdir6)
+        fa.save_bot_config(json.dumps({"notify_chat_id": "oc_test", "trigger_mode": "notify"}))
+    finally:
+        os.chdir(_old_cwd6)
+    l2b = fa._read_project_config(cwd=tmpdir6)
+    check("save_bot_config 写 L2 bot.notify_chat_id",
+          l2b.get("bot", {}).get("notify_chat_id") == "oc_test")
+
 # ─── 汇总 ─────────────────────────────────────────────────────────────────────
 total = len(results)
 passed = sum(1 for _, p in results if p)

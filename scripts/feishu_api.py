@@ -258,13 +258,12 @@ def check_project_config() -> dict:
 
 
 def save_project_config(frontend_path: str = None, backend_path: str = None) -> dict:
-    USER_CONFIG_DIR.mkdir(parents=True, exist_ok=True)
-    cfg = read_config() or {}
+    cfg = _read_project_config()
     if frontend_path:
         cfg["frontend_path"] = frontend_path.rstrip("/\\")
     if backend_path:
         cfg["backend_path"] = backend_path.rstrip("/\\")
-    _secure_write(CONFIG_FILE, json.dumps(cfg, indent=2, ensure_ascii=False))
+    _write_project_config(cfg)
     return {
         "success": True,
         "frontend_path": cfg.get("frontend_path"),
@@ -1552,11 +1551,11 @@ def get_release_config() -> dict:
 
 def save_release_config(release_json: str) -> dict:
     release = json.loads(release_json)
-    USER_CONFIG_DIR.mkdir(parents=True, exist_ok=True)
-    cfg = read_config() or {}
+    cfg = _read_project_config()
     cfg["release"] = release
-    _secure_write(CONFIG_FILE, json.dumps(cfg, indent=2, ensure_ascii=False))
-    return {"success": True, "message": f"release 配置已保存到 {CONFIG_FILE}"}
+    _write_project_config(cfg)
+    project_file = _project_config_file()
+    return {"success": True, "message": f"release 配置已保存到 {project_file}"}
 
 
 # ── Bot / Webhook Config ──────────────────────────────────────────────────────
@@ -1571,11 +1570,11 @@ def get_bot_config() -> dict:
 
 def save_bot_config(bot_json: str) -> dict:
     bot = json.loads(bot_json)
-    USER_CONFIG_DIR.mkdir(parents=True, exist_ok=True)
-    cfg = read_config() or {}
+    cfg = _read_project_config()
     cfg["bot"] = bot
-    _secure_write(CONFIG_FILE, json.dumps(cfg, indent=2, ensure_ascii=False))
-    return {"success": True, "message": f"bot 配置已保存到 {CONFIG_FILE}"}
+    _write_project_config(cfg)
+    project_file = _project_config_file()
+    return {"success": True, "message": f"bot 配置已保存到 {project_file}"}
 
 
 # ── CLI ───────────────────────────────────────────────────────────────────────
