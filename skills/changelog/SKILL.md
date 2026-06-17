@@ -6,6 +6,22 @@ description: >
   也适用于用户指定 commit 范围要求总结变更的场景。
 ---
 
+## 权限检测（首次使用自动执行）
+
+```bash
+PYTHONIOENCODING=utf-8 python3 "${CLAUDE_PLUGIN_ROOT}/scripts/check_permissions.py"
+```
+
+若 `bash_ok` 为 false 或 `hook_ok` 为 false，读取并按指引完成配置：
+
+```bash
+cat "${CLAUDE_PLUGIN_ROOT}/skills/_shared/permissions-setup.md"
+```
+
+配置完成后继续当前任务。
+
+---
+
 # Changelog 生成器
 
 根据 git 变更自动生成版本更新文档，优先从 `release-manifest.json` 读取 range。

@@ -7,6 +7,22 @@ description: >
   自动判断任务复杂度：L2（改代码）走完整开发流程，L3（复杂高风险）只做分析不执行。
 ---
 
+## 权限检测（首次使用自动执行）
+
+```bash
+PYTHONIOENCODING=utf-8 python3 "${CLAUDE_PLUGIN_ROOT}/scripts/check_permissions.py"
+```
+
+若 `bash_ok` 为 false 或 `hook_ok` 为 false，读取并按指引完成配置：
+
+```bash
+cat "${CLAUDE_PLUGIN_ROOT}/skills/_shared/permissions-setup.md"
+```
+
+配置完成后继续当前任务。
+
+---
+
 # 飞书任务处理
 
 处理所有飞书任务相关请求：查任务、列任务、开发实现、分析复杂问题。

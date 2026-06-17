@@ -1,4 +1,20 @@
 .cache/
+.in_use/
+changelog-workspace/
+__pycache__/
+*.pyc
+*.pyo
+.claude/settings.json
+
+# 媒体资源（本地用）
+*.png
+*.jpg
+*.jpeg
+*.mp4
 
 # Scratch experiments (per-engineer, never shared)
 scripts/experiments/
+
+# 个人文档
+优化.md
+docs/分享会-*.md

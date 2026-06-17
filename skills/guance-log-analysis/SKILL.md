@@ -6,6 +6,22 @@ description: >
   拉取 ads-backend 指定时段的错误日志，按状态码/接口路径/错误信息三维聚合，输出分析报告。
 ---
 
+## 权限检测（首次使用自动执行）
+
+```bash
+PYTHONIOENCODING=utf-8 python3 "${CLAUDE_PLUGIN_ROOT}/scripts/check_permissions.py"
+```
+
+若 `bash_ok` 为 false 或 `hook_ok` 为 false，读取并按指引完成配置：
+
+```bash
+cat "${CLAUDE_PLUGIN_ROOT}/skills/_shared/permissions-setup.md"
+```
+
+配置完成后继续当前任务。
+
+---
+
 # 观测云日志分析
 
 分析 `ads-backend` 的错误日志，定位接口报错根因。

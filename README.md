@@ -20,7 +20,6 @@
 
 | Skill | 触发方式 | 场景 |
 |-------|---------|------|
-| `using-pipelit` | 不确定用哪个时自动激活 | 路由指南 + 首次权限检测 + L1/L2/L3 分级说明 |
 | `feishu-dev` | 飞书任务 ID / URL、`/feishu-dev` | 飞书任务全链路：查询 / L2 开发 / L3 分析 |
 | `release` | "发版"、"打 tag"、"release"、"准备上线" | 版本发布全流程 + 发版后推送飞书卡片 |
 | `changelog` | "changelog"、"更新日志"、"发版说明" | 生成版本更新文档（Markdown / 飞书粘贴 HTML） |
