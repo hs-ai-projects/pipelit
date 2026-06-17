@@ -125,7 +125,7 @@ python3 config_manager.py set <field_path> <value>
 
 不在上表中的字段：返回 `{"error": "unsupported_field", "field": "<name>"}` 并提示支持的字段列表。
 
-`set app_secret` / `set guance.api_key` 特殊处理：因为这两个字段必须和配对字段一起写（`save_config` 需要 app_id+app_secret），`set` 命令先读现有 L2 配置取到另一个字段，再调用对应函数写入。若另一个字段缺失，返回错误提示用户先配置。
+`set app_id` / `set app_secret` / `set guance.api_key` / `set guance.workspace_id` 特殊处理：这些字段必须成对写入（`save_config` 需要 app_id+app_secret 同时存在）。`set` 命令先读现有 L2 配置取到配对字段，再一起写入。若配对字段缺失，返回错误提示用户两个字段一起配置（建议用 `save_config` 引导）。
 
 ---
 

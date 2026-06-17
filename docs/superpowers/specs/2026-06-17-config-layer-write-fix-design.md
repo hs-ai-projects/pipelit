@@ -71,6 +71,7 @@ def _write_project_config(data: dict, cwd=None):
 - `get_token()`
 - `get_release_config()`
 - `get_bot_config()`
+- `_get_app_token()`
 - `_resolve_reference_image()`
 - `_release_brand_context()`
 

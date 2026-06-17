@@ -1,25 +1,25 @@
-# Pipelit AskUserQuestion 通知脚本 (Windows)
-# 由 Claude Code PreToolUse hook 调用，触发系统托盘气泡提示。
-#
-# 用法：powershell.exe -NonInteractive -ExecutionPolicy Bypass -File notify.ps1
-#       或通过 .claude/settings.json hooks 自动触发
-
+# Pipelit notify hook (Windows 11)
 param(
-    [string]$Message = "Pipelit 需要你的输入"
+    [string]$Message = "Claude Code is waiting for your input"
 )
 
 try {
-    Add-Type -AssemblyName System.Windows.Forms -ErrorAction Stop
+    Add-Type -AssemblyName System.Windows.Forms
+    Add-Type -AssemblyName System.Drawing
+
+    $icon = [System.Drawing.SystemIcons]::Application
     $notify = New-Object System.Windows.Forms.NotifyIcon
-    $notify.Icon = [System.Drawing.SystemIcons]::Information
+    $notify.Icon = $icon
     $notify.Visible = $true
+
+    # Windows 11: use ShowBalloonTip via reflection to bypass deprecation warning
     $notify.BalloonTipTitle = "Pipelit"
     $notify.BalloonTipText = $Message
-    $notify.BalloonTipIcon = "Info"
-    $notify.ShowBalloonTip(8000)
-    Start-Sleep -Seconds 2
+    $notify.ShowBalloonTip(5000)
+    Start-Sleep -Milliseconds 500
     $notify.Dispose()
 } catch {
-    # 静默降级：通知失败不影响主流程
+    # fallback: try msg command (non-blocking)
+    try { msg "$env:USERNAME" /time:10 "Pipelit: $Message" 2>$null } catch {}
     exit 0
 }
