@@ -230,7 +230,7 @@ def save_config(app_id: str, app_secret: str) -> dict:
 
 
 def check_config() -> dict:
-    cfg = read_config()
+    cfg = load_merged_config()
     if not cfg or not cfg.get("app_id") or not cfg.get("app_secret"):
         return {
             "configured": False,
@@ -247,7 +247,7 @@ def check_config() -> dict:
 
 
 def check_project_config() -> dict:
-    cfg = read_config() or {}
+    cfg = load_merged_config()
     frontend = cfg.get("frontend_path")
     backend = cfg.get("backend_path")
     return {
@@ -361,7 +361,7 @@ AUTH_REDIRECT_URI = "http://127.0.0.1:9876/callback"
 
 def _get_app_token() -> str:
     """获取 app_access_token（用于 OAuth 码换 token）。"""
-    cfg = read_config()
+    cfg = load_merged_config()
     result = http("POST", "/open-apis/auth/v3/app_access_token/internal", body={
         "app_id": cfg["app_id"],
         "app_secret": cfg["app_secret"],
@@ -933,7 +933,7 @@ def _resolve_reference_image(params: dict) -> pathlib.Path | None:
     raw = params.get("reference_image_path") or os.environ.get("RELEASE_REFERENCE_IMAGE")
     use_default = params.get("use_reference_image", True)
     if not raw:
-        cfg = read_config() or {}
+        cfg = load_merged_config()
         release = cfg.get("release") or {}
         raw = release.get("mascotImagePath")
     if raw:
@@ -951,7 +951,7 @@ def _resolve_reference_image(params: dict) -> pathlib.Path | None:
 
 
 def _release_brand_context(params: dict) -> str:
-    cfg = read_config() or {}
+    cfg = load_merged_config()
     release = cfg.get("release") or {}
     return (
         params.get("brand_context")
@@ -1094,7 +1094,7 @@ def _require_openai_api_key() -> str:
 
 
 def _save_release_mascot_config(path: pathlib.Path, params: dict) -> None:
-    cfg = read_config() or {}
+    cfg = load_merged_config()
     release = cfg.get("release") or {}
     release["mascotImagePath"] = str(path)
     if params.get("mascot_description"):
@@ -1542,7 +1542,7 @@ def send_message(chat_id: str, text: str) -> dict:
 # ── Release Config ───────────────────────────────────────────────────────────
 
 def get_release_config() -> dict:
-    cfg = read_config() or {}
+    cfg = load_merged_config()
     release = cfg.get("release")
     if not release:
         return {"configured": False}
@@ -1561,7 +1561,7 @@ def save_release_config(release_json: str) -> dict:
 # ── Bot / Webhook Config ──────────────────────────────────────────────────────
 
 def get_bot_config() -> dict:
-    cfg = read_config() or {}
+    cfg = load_merged_config()
     bot = cfg.get("bot")
     if not bot:
         return {"configured": False}

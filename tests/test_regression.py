@@ -181,6 +181,22 @@ with tempfile.TemporaryDirectory() as tmpdir6:
     check("save_bot_config 写 L2 bot.notify_chat_id",
           l2b.get("bot", {}).get("notify_chat_id") == "oc_test")
 
+# ─── 13. check_config 读 merged config ───────────────────────────────────────
+print("\n=== 13. check_config 读 merged config（config-layer-write-fix）===")
+with tempfile.TemporaryDirectory() as tmpdir7:
+    fa._write_project_config(
+        {"app_id": "cli_l2_only", "app_secret": "secret_l2"},
+        cwd=tmpdir7
+    )
+    _old_cwd7 = os.getcwd()
+    try:
+        os.chdir(tmpdir7)
+        result = fa.check_config()
+    finally:
+        os.chdir(_old_cwd7)
+    check("check_config 能读 L2 的 app_id", result.get("app_id") == "cli_l2_only")
+    check("check_config L2 凭据时返回 configured=True", result.get("configured") is True)
+
 # ─── 汇总 ─────────────────────────────────────────────────────────────────────
 total = len(results)
 passed = sum(1 for _, p in results if p)
