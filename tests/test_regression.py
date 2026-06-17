@@ -99,6 +99,35 @@ audit = importlib.util.module_from_spec(spec5); spec5.loader.exec_module(audit)
 logs = audit._all_logs()
 check("audit _all_logs 可运行（有或无日志）", True, f"{len(logs)} 条日志")
 
+# ─── 8. guance DQL 查询字符串构造 ────────────────────────────────────────────
+print("\n=== 8. guance DQL 查询字符串构造（Step A 接口过滤）===")
+from scripts.guance_api import LOG_SOURCE
+
+iface_with_hyphen = "/api/search-term/report"
+dql_q = (
+    f"L::re('{LOG_SOURCE}')"
+    f"{{message =~ /{iface_with_hyphen}/}}"
+    f" LIMIT 10"
+)
+check("Step A 用 message 字段过滤（非 requestUrl）", "message =~" in dql_q)
+check("Step A 不含 requestUrl", "requestUrl" not in dql_q)
+check("Step A 连字符不被转义为 \\-", r"\-" not in dql_q)
+
+# ─── 9. L2 工具函数 ───────────────────────────────────────────────────────────
+print("\n=== 9. L2 工具函数（config-layer-write-fix）===")
+with tempfile.TemporaryDirectory() as tmpdir2:
+    f = fa._project_config_file(cwd=tmpdir2)
+    check("_project_config_file 返回正确路径",
+          str(f) == str(pathlib.Path(tmpdir2) / ".pipelit" / "config.json"))
+
+    fa._write_project_config({"app_id": "test_app"}, cwd=tmpdir2)
+    read_back = fa._read_project_config(cwd=tmpdir2)
+    check("_write_project_config 写入后 _read_project_config 可读",
+          read_back.get("app_id") == "test_app")
+
+    empty = fa._read_project_config(cwd="/tmp/nonexistent_9999")
+    check("_read_project_config 目录不存在时返回空 dict", empty == {})
+
 # ─── 汇总 ─────────────────────────────────────────────────────────────────────
 total = len(results)
 passed = sum(1 for _, p in results if p)
