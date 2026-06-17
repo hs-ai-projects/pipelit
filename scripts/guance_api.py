@@ -27,28 +27,14 @@ import urllib.error
 import pathlib
 from datetime import datetime, timezone, timedelta
 
-# 用户数据：跨项目/跨工作目录共享，固定在用户主目录
+# 用户数据目录（仅 token 缓存等全局数据使用）
 USER_CONFIG_DIR = pathlib.Path.home() / ".claude" / "pipelit"
-GUANCE_CONFIG_FILE = USER_CONFIG_DIR / "guance_config.json"
 
 
-def _migrate_legacy_cache() -> None:
-    """一次性迁移：从旧的 <plugin_root>/.cache/guance_config.json 迁移到新位置。"""
-    if GUANCE_CONFIG_FILE.exists():
-        return
-    candidates = []
-    env_root = os.environ.get("CLAUDE_PLUGIN_ROOT")
-    if env_root:
-        candidates.append(pathlib.Path(env_root) / ".cache" / "guance_config.json")
-    candidates.append(pathlib.Path(__file__).parent.parent / ".cache" / "guance_config.json")
-    for legacy in candidates:
-        if legacy.exists():
-            USER_CONFIG_DIR.mkdir(parents=True, exist_ok=True)
-            GUANCE_CONFIG_FILE.write_bytes(legacy.read_bytes())
-            return
-
-
-_migrate_legacy_cache()
+def _guance_config_file(cwd: str | None = None) -> pathlib.Path:
+    """返回项目级 guance 配置文件路径：<cwd>/.pipelit/guance_config.json"""
+    base = pathlib.Path(cwd) if cwd else pathlib.Path.cwd()
+    return base / ".pipelit" / "guance_config.json"
 
 HTTP_TIMEOUT = 30
 LOG_SOURCE = "ads-backend"
@@ -179,13 +165,13 @@ def _post(url: str, api_key: str, workspace_id: str, body: dict) -> dict:
 # ── 配置管理 ──────────────────────────────────────────────────────────────────
 
 def read_config() -> dict | None:
-    if GUANCE_CONFIG_FILE.exists():
-        return json.loads(GUANCE_CONFIG_FILE.read_text(encoding="utf-8"))
+    f = _guance_config_file()
+    if f.exists():
+        return json.loads(f.read_text(encoding="utf-8"))
     return None
 
 
 def save_config(api_key: str, workspace_id: str) -> dict:
-    USER_CONFIG_DIR.mkdir(parents=True, exist_ok=True)
     # 从 workspace_id 推断 base_url（cn6 → https://cn6-openapi.guance.com）
     m = re.search(r'(cn\d+)', workspace_id.lower()) if 'cn' in workspace_id.lower() else None
     # 也允许 workspace_id 已经是 URL 格式
@@ -197,12 +183,14 @@ def save_config(api_key: str, workspace_id: str) -> dict:
         base_url = f"https://{region}-openapi.guance.com" if region else "https://openapi.guance.com"
 
     cfg = {"api_key": api_key, "workspace_id": workspace_id, "base_url": base_url}
-    _secure_write(GUANCE_CONFIG_FILE, json.dumps(cfg, indent=2))
+    f = _guance_config_file()
+    f.parent.mkdir(parents=True, exist_ok=True)
+    _secure_write(f, json.dumps(cfg, indent=2))
     return {
         "success": True,
         "base_url": base_url,
         "workspace_id": workspace_id,
-        "message": f"配置已保存 → {GUANCE_CONFIG_FILE}",
+        "message": f"配置已保存 → {f}",
     }
 
 
@@ -461,9 +449,11 @@ def query_errors_silent(start: str, end: str, interfaces: list[str] | None = Non
     if interfaces:
         for iface in interfaces:
             # 查询该接口的所有日志（所有 status 级别），带回 request/response payload
+            # requestUrl 内嵌在 message JSON 字符串里，不是顶级字段，须用 message 字段搜索
+            # 不使用 re.escape：Guance DQL regex 不支持 \- 等转义写法
             q = (
                 f"L::re('{LOG_SOURCE}')"
-                f"{{requestUri =~ /{re.escape(iface)}/}}"
+                f"{{message =~ /{iface}/}}"
                 f" LIMIT {limit}"
             )
             try:

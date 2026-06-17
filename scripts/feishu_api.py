@@ -1440,8 +1440,8 @@ def send_release_card_with_mentions(params_json: str) -> dict:
     doc_url = params.get("doc_url", "")
     image_path = params.get("image_path")
 
-    # cardFeatures: 从 params > L1 config > 默认 true
-    _global_features = (read_config() or {}).get("cardFeatures", {})
+    # cardFeatures: 从 params > merged config > 默认 true
+    _global_features = load_merged_config().get("cardFeatures", {})
     _param_features = params.get("card_features", {})
     _merged_features = {**{"linkTask": True, "atFollower": True, "image": True},
                         **_global_features, **_param_features}
