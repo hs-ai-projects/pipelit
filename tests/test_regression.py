@@ -131,8 +131,12 @@ with tempfile.TemporaryDirectory() as tmpdir2:
 # ─── 10. save_config 写 L2 ───────────────────────────────────────────────────
 print("\n=== 10. save_config 写 L2（config-layer-write-fix）===")
 with tempfile.TemporaryDirectory() as tmpdir3:
-    os.chdir(tmpdir3)
-    fa.save_config("cli_test_app", "test_secret")
+    _old_cwd = os.getcwd()
+    try:
+        os.chdir(tmpdir3)
+        fa.save_config("cli_test_app", "test_secret")
+    finally:
+        os.chdir(_old_cwd)
     l2 = fa._read_project_config(cwd=tmpdir3)
     check("save_config 写入 L2 app_id", l2.get("app_id") == "cli_test_app")
     check("save_config 写入 L2 app_secret", l2.get("app_secret") == "test_secret")
