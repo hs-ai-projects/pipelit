@@ -225,6 +225,35 @@ finally:
     fa.load_merged_config = original_load
     fa.TOKEN_CACHE_FILE.unlink(missing_ok=True)
 
+# ─── 15. config_manager overview ─────────────────────────────────────────────
+print("\n=== 15. config_manager overview（config-skill）===")
+import tempfile
+spec_cm = importlib.util.spec_from_file_location("cm", ROOT / "scripts/config_manager.py")
+cm = importlib.util.module_from_spec(spec_cm); spec_cm.loader.exec_module(cm)
+
+with tempfile.TemporaryDirectory() as tmpdir_cm:
+    # 写 L2 config
+    pipelit_dir = pathlib.Path(tmpdir_cm) / ".pipelit"
+    pipelit_dir.mkdir()
+    (pipelit_dir / "config.json").write_text(json.dumps({
+        "app_id": "cli_test", "app_secret": "secret",
+        "frontend_path": tmpdir_cm,
+        "release": {"projectName": "test-proj", "chatId": "oc_test"}
+    }), encoding="utf-8")
+    result = cm.overview(cwd=tmpdir_cm)
+    check("overview 返回 l2 字段", "l2" in result)
+    check("overview l2 app_id ok", result["l2"].get("app_id", {}).get("status") == "ok")
+    check("overview l2 app_secret masked", result["l2"].get("app_secret", {}).get("masked") is True)
+    check("overview l2 frontend_path ok（目录存在）", result["l2"].get("frontend_path", {}).get("status") == "ok")
+    check("overview release.projectName ok", result["l2"].get("release.projectName", {}).get("value") == "test-proj")
+    check("overview 返回 token 字段", "token" in result)
+    check("overview 返回 hooks 字段", "hooks" in result)
+
+    # section 过滤
+    r_feishu = cm.overview(cwd=tmpdir_cm, section="feishu")
+    check("overview feishu section 不含 release", "release.chatId" not in r_feishu.get("l2", {}))
+    check("overview feishu section 含 app_id", "app_id" in r_feishu.get("l2", {}))
+
 # ─── 汇总 ─────────────────────────────────────────────────────────────────────
 total = len(results)
 passed = sum(1 for _, p in results if p)
