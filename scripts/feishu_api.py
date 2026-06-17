@@ -469,8 +469,8 @@ def auth() -> dict:
     from http.server import HTTPServer, BaseHTTPRequestHandler
     import urllib.parse
 
-    cfg = read_config()
-    if not cfg:
+    cfg = load_merged_config()
+    if not cfg or not cfg.get("app_id") or not cfg.get("app_secret"):
         raise RuntimeError("请先配置 app_id/app_secret")
 
     state = os.urandom(8).hex()
@@ -529,8 +529,8 @@ def print_auth_url() -> dict:
     """无浏览器环境：打印授权链接，让用户在本地浏览器手动完成授权，再用 exchange_code 换 token。"""
     import urllib.parse
 
-    cfg = read_config()
-    if not cfg:
+    cfg = load_merged_config()
+    if not cfg or not cfg.get("app_id") or not cfg.get("app_secret"):
         raise RuntimeError("请先配置 app_id/app_secret")
 
     state = os.urandom(8).hex()
