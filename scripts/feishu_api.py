@@ -332,14 +332,15 @@ def load_merged_config(cwd: str | None = None) -> dict:
 # ── Token ─────────────────────────────────────────────────────────────────────
 
 def get_token() -> str:
+    cfg = load_merged_config()
+    if not cfg.get("app_id") or not cfg.get("app_secret"):
+        raise RuntimeError("凭据未配置，请先运行 check_config")
+
     if TOKEN_CACHE_FILE.exists():
         cache = json.loads(TOKEN_CACHE_FILE.read_text())
-        if time.time() < cache.get("expires_at", 0):
+        if (time.time() < cache.get("expires_at", 0)
+                and cache.get("app_id") == cfg["app_id"]):
             return cache["token"]
-
-    cfg = read_config()
-    if not cfg:
-        raise RuntimeError("凭据未配置，请先运行 check_config")
 
     result = http("POST", "/open-apis/auth/v3/tenant_access_token/internal", body={
         "app_id": cfg["app_id"],
@@ -352,7 +353,11 @@ def get_token() -> str:
     expires_at = time.time() + result.get("expire", 7200) - 60
 
     USER_CONFIG_DIR.mkdir(parents=True, exist_ok=True)
-    _secure_write(TOKEN_CACHE_FILE, json.dumps({"token": token, "expires_at": expires_at}))
+    _secure_write(TOKEN_CACHE_FILE, json.dumps({
+        "token": token,
+        "expires_at": expires_at,
+        "app_id": cfg["app_id"],
+    }))
     return token
 
 

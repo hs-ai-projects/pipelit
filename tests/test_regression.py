@@ -197,6 +197,34 @@ with tempfile.TemporaryDirectory() as tmpdir7:
     check("check_config 能读 L2 的 app_id", result.get("app_id") == "cli_l2_only")
     check("check_config L2 凭据时返回 configured=True", result.get("configured") is True)
 
+# ─── 14. token 缓存 app_id 校验 ──────────────────────────────────────────────
+print("\n=== 14. token cache app_id 校验（config-layer-write-fix）===")
+import importlib.util as _ilu14
+_spec14 = _ilu14.spec_from_file_location("feishu_api", ROOT / "scripts" / "feishu_api.py")
+fa = _ilu14.module_from_spec(_spec14)
+_spec14.loader.exec_module(fa)
+import time as _time
+# 写一个 token 缓存，app_id = "old_app"
+fa.USER_CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+fa.TOKEN_CACHE_FILE.write_text(json.dumps({
+    "token": "old_token",
+    "expires_at": _time.time() + 3600,
+    "app_id": "old_app",
+}), encoding="utf-8")
+# patch load_merged_config 返回不同的 app_id
+original_load = fa.load_merged_config
+fa.load_merged_config = lambda cwd=None: {"app_id": "new_app", "app_secret": "s"}
+try:
+    try:
+        fa.get_token()
+        check("token 缓存 app_id 不匹配时触发重新获取", False, "未抛出异常，直接返回了旧 token")
+    except Exception as e:
+        # 抛出异常说明它尝试重新获取（而不是命中缓存直接返回 old_token）
+        check("token 缓存 app_id 不匹配时触发重新获取", True, str(e)[:50])
+finally:
+    fa.load_merged_config = original_load
+    fa.TOKEN_CACHE_FILE.unlink(missing_ok=True)
+
 # ─── 汇总 ─────────────────────────────────────────────────────────────────────
 total = len(results)
 passed = sum(1 for _, p in results if p)
