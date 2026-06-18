@@ -281,7 +281,7 @@ def _maybe_create_extends_pointer(cfg: dict) -> None:
         pass
 
     other = bp_path if canonical_is_under_fp else fp_path
-    ptr_file = other / ".pipelit" / "config.json"
+    ptr_file = other / ".claude" / "pipelit" / "config.json"
 
     # 若另一个目录已有实质配置则不覆盖
     if ptr_file.exists():
@@ -315,7 +315,7 @@ def save_project_config(frontend_path: str = None, backend_path: str = None) -> 
 
 def _project_config_file(cwd: str | None = None) -> pathlib.Path:
     base = pathlib.Path(cwd) if cwd else pathlib.Path.cwd()
-    return base / ".pipelit" / "config.json"
+    return base / ".claude" / "pipelit" / "config.json"
 
 
 def _resolve_canonical_config(cwd: str | None = None) -> pathlib.Path:
@@ -355,7 +355,7 @@ def load_merged_config(cwd: str | None = None) -> dict:
     """三层配置合并：L1 用户级 < L2 项目级 < L3 仓库级（浅合并，高层覆盖低层）。
 
     L1: ~/.claude/pipelit/config.json        凭据、全局默认值
-    L2: <cwd>/.pipelit/config.json            项目路径、发版配置
+    L2: <cwd>/.claude/pipelit/config.json     项目路径、发版配置
     L3: <cwd>/.pipelit.json（可选）           仓库级 precheck、特殊规则
     """
     result: dict = {}
@@ -368,7 +368,7 @@ def load_merged_config(cwd: str | None = None) -> dict:
     base = pathlib.Path(cwd) if cwd else pathlib.Path.cwd()
 
     # L2
-    l2_file = base / ".pipelit" / "config.json"
+    l2_file = base / ".claude" / "pipelit" / "config.json"
     if l2_file.exists():
         try:
             result.update(json.loads(l2_file.read_text(encoding="utf-8")))
@@ -1156,7 +1156,7 @@ def _require_openai_api_key() -> str:
 
 
 def _save_release_mascot_config(path: pathlib.Path, params: dict) -> None:
-    cfg = load_merged_config()
+    cfg = _read_project_config()
     release = cfg.get("release") or {}
     release["mascotImagePath"] = str(path)
     if params.get("mascot_description"):
@@ -1164,8 +1164,7 @@ def _save_release_mascot_config(path: pathlib.Path, params: dict) -> None:
     if params.get("company_icon_path"):
         release["companyIconPath"] = params["company_icon_path"]
     cfg["release"] = release
-    USER_CONFIG_DIR.mkdir(parents=True, exist_ok=True)
-    _secure_write(CONFIG_FILE, json.dumps(cfg, indent=2, ensure_ascii=False))
+    _write_project_config(cfg)
 
 
 def _resolve_optional_image_path(raw: str | None) -> pathlib.Path | None:
