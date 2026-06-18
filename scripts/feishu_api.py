@@ -44,6 +44,7 @@ import random
 import urllib.request
 import urllib.error
 import pathlib
+import subprocess
 
 try:
     sys.stdout.reconfigure(encoding="utf-8")
@@ -371,6 +372,65 @@ def detect_project_paths(cwd: str | None = None) -> dict:
         )
     if not result["frontend"] and not result["backend"]:
         result["suggestions"].append("未检测到已知项目类型，请手动填写路径")
+
+    return result
+
+
+def detect_release_branch(repo_path: str | None = None) -> dict:
+    """检测仓库主分支名称和版本文件类型。"""
+    path = pathlib.Path(repo_path) if repo_path else pathlib.Path.cwd()
+
+    result = {
+        "branch": "main",
+        "version_file": None,
+        "version_updater": None,
+        "detection_method": "default",
+    }
+
+    # 检测主分支
+    try:
+        r = subprocess.run(
+            ["git", "-C", str(path), "symbolic-ref", "refs/remotes/origin/HEAD"],
+            capture_output=True, text=True, timeout=5
+        )
+        if r.returncode == 0:
+            ref = r.stdout.strip()  # refs/remotes/origin/main
+            result["branch"] = ref.split("/")[-1]
+            result["detection_method"] = "symbolic-ref"
+    except Exception:
+        pass
+
+    if result["detection_method"] == "default":
+        # fallback：检查 main/master 哪个存在
+        try:
+            r = subprocess.run(
+                ["git", "-C", str(path), "branch", "-r"],
+                capture_output=True, text=True, timeout=5
+            )
+            branches = r.stdout
+            if "origin/main" in branches:
+                result["branch"] = "main"
+                result["detection_method"] = "branch-list"
+            elif "origin/master" in branches:
+                result["branch"] = "master"
+                result["detection_method"] = "branch-list"
+        except Exception:
+            pass
+
+    # 检测版本文件
+    version_file_map = [
+        ("package.json", "npm"),
+        ("pyproject.toml", "poetry"),
+        ("setup.py", "setuptools"),
+        ("pom.xml", "maven"),
+        ("build.gradle", "gradle"),
+        ("Cargo.toml", "cargo"),
+    ]
+    for fname, updater in version_file_map:
+        if (path / fname).exists():
+            result["version_file"] = fname
+            result["version_updater"] = updater
+            break
 
     return result
 
@@ -1725,6 +1785,9 @@ def main():
         elif cmd == "detect_project_paths":
             cwd = args[1] if len(args) > 1 else None
             out = detect_project_paths(cwd)
+        elif cmd == "detect_release_branch":
+            repo_path = args[1] if len(args) > 1 else None
+            out = detect_release_branch(repo_path)
         elif cmd == "auth":
             out = auth()
         elif cmd == "print_auth_url":
