@@ -349,7 +349,10 @@ def detect_project_paths(cwd: str | None = None) -> dict:
 
     # 2. 扫描兄弟目录（最多检查 10 个，避免超时）
     parent = base.parent
-    siblings = [p for p in parent.iterdir() if p.is_dir() and p != base][:10]
+    try:
+        siblings = [p for p in parent.iterdir() if p.is_dir() and p != base][:10]
+    except OSError:
+        siblings = []
     for sib in siblings:
         sib_type = _detect_type(sib)
         if not sib_type:

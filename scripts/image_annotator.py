@@ -87,15 +87,16 @@ def analyze_annotations(image_path: str) -> dict:
 
         # 裁剪并保存
         crop = img.crop((x1, y1, x2, y2))
-        tmp = tempfile.NamedTemporaryFile(
+        with tempfile.NamedTemporaryFile(
             prefix="pipelit_ann_", suffix=".png", delete=False
-        )
-        crop.save(tmp.name)
+        ) as tmp:
+            tmp_name = tmp.name
+        crop.save(tmp_name)
 
         annotations.append({
             "color": color,
             "bbox": [x1, y1, x2, y2],
-            "crop_path": tmp.name,
+            "crop_path": tmp_name,
             "pixel_count": len(pts),
         })
 
