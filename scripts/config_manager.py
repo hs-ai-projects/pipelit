@@ -48,7 +48,9 @@ def overview(cwd: str | None = None, section: str | None = None) -> dict:
     l1_cfg = feishu_api.read_config() or {}
     result["l1"] = {
         "file": str(feishu_api.CONFIG_FILE),
-        "user_id": _f(l1_cfg.get("user_id"), "ok" if l1_cfg.get("user_id") else "missing"),
+        "fields": {
+            "user_id": _f(l1_cfg.get("user_id"), "ok" if l1_cfg.get("user_id") else "missing"),
+        }
     }
 
     # L2 main config
