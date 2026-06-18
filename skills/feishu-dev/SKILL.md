@@ -121,14 +121,80 @@ PYTHONIOENCODING=utf-8 python3 "${CLAUDE_PLUGIN_ROOT}/scripts/feishu_api.py" get
 记录 `task.id`、`task.summary`、任务链接备用。
 
 **异常处理**：
-- 返回 `{"error": "凭据未配置"}` → 引导配置 `save_config`
-- `project_config.configured` 为 false → 询问前后端路径，调用 `save_project_config`
+- 返回 `{"error": "凭据未配置"}` 或 `project_config.configured` 为 false → 进入**首次配置向导**（见下方）
+
+#### 首次配置向导
+
+首次配置前，**先自动检测项目路径**：
+
+```bash
+PYTHONIOENCODING=utf-8 python3 "${CLAUDE_PLUGIN_ROOT}/scripts/feishu_api.py" detect_project_paths
+```
+
+若检测到路径（`frontend` 或 `backend` 字段不为 null），通过 AskUserQuestion 展示检测结果并让用户确认：
+
+```
+检测到可能的项目路径：
+  前端: <frontend.path>（<frontend.type>，置信度：<frontend.confidence>）
+  后端: <backend.path>（<backend.type>，置信度：<backend.confidence>）
+
+是否使用以上路径？
+  ● 确认（直接使用）
+  ○ 手动调整
+```
+
+用户选"确认"→ 直接调用 `save_project_config`；选"调整"→ 走原有的手动填写流程。
+
+检测结果为空时，跳过检测步骤，直接走手动填写流程。
+
+**禁止从 memory 自动填充任何路径或凭据。** 必须用 AskUserQuestion 一次性收集所有配置：
+
+```
+首次使用需要完成配置，请提供以下信息：
+
+1. 前端项目路径（如 /Users/xxx/ads-web）
+2. 后端项目路径（如 /Users/xxx/ads，无后端填"无"）
+3. 飞书 App ID（如 cli_xxx）
+4. 飞书 App Secret
+5. 观测云 API Key（可选，跳过填"跳过"）
+6. 观测云 Workspace ID（可选）
+```
+
+收到回复后依次调用：
+
+```bash
+# 前后端路径
+PYTHONIOENCODING=utf-8 python3 "${CLAUDE_PLUGIN_ROOT}/scripts/feishu_api.py" \
+  save_project_config <frontend_path|null> <backend_path|null>
+
+# 飞书凭据
+PYTHONIOENCODING=utf-8 python3 "${CLAUDE_PLUGIN_ROOT}/scripts/feishu_api.py" \
+  save_config <app_id> <app_secret>
+
+# 观测云（若用户未跳过）
+PYTHONIOENCODING=utf-8 python3 "${CLAUDE_PLUGIN_ROOT}/scripts/guance_api.py" \
+  save_config <api_key> <workspace_id>
+```
+
+配置完成后继续当前任务。
 
 ### 1.2 附件图片处理
 
 检查返回的 `has_images`、`images`、`has_videos`、`videos` 字段：
 
 **若 `has_images` 为 true**：用 Read 工具读取已下载的图片文件（`images[].path`），作为任务上下文。
+
+同时使用结构化标注数据辅助分析：
+
+**`image_annotations` 字段**（由 image_annotator 自动产出）：
+若 `image_annotations[<path>].annotation_count > 0`，优先读取标注列表：
+- `color`：标注颜色（`red` / `green` / `yellow`），红色为最高优先级
+- `crop_path`：已裁剪的标注区域图片路径，用 Read 工具读取放大查看
+- 标注区域旁边的文字是用户的说明，是定位 bug 的首要线索
+
+若 `image_annotations` 为空（Pillow 未安装或标注颜色太淡）：降级到直接用 Read 读原图，人工识别红色圈/框/箭头。
+
+记录所有标注信息为 `red_annotations`，在后续分析中优先作为定位依据
 
 **若 `has_videos` 为 true**：输出提示（不阻断流程）：
 
@@ -250,6 +316,9 @@ grep -rn "<路径>" <frontend_path>/src --include="*.ts" --include="*.vue" &
 grep -rn "<路径>" <backend_path> --include="*.py" &
 wait
 ```
+
+**有后端路径时（`backend_path` 已配置）：前后端必须同时排查，不可只改前端。** 即使任务描述只提到前端现象，也要确认后端接口是否正常、是否需要同步修改。
+
 - 找到候选文件后读取前 30 行确认功能。
 - 候选 > 3 个时，**强制收敛到最长公共前缀**，用 AskUserQuestion 让用户选择。
 - AskUserQuestion 候选展示要列出**具体文件路径**而非"接口模块"。
@@ -376,13 +445,20 @@ PYTHONIOENCODING=utf-8 python3 "${CLAUDE_PLUGIN_ROOT}/scripts/log_providers/disp
 
 任务可能涉及前端和后端两个仓库。**对每个涉及的仓库独立执行以下逻辑，不可跳过任一仓库**：
 
-**执行规则**：
+**执行规则（三段式）**：
 
-1. `cd` 到该仓库路径
-2. 检查当前分支：
-   - 在 master/main/dev → 创建 `feat/feishu-{task_id 前 8 位}`
-   - 已有同名 feat 分支 → 切换到已有分支
-   - 在其他 feature 分支（非本任务的） → 仍然创建 `feat/feishu-{task_id 前 8 位}`
+1. `cd` 到该仓库路径，获取当前分支名
+2. 判断：
+   - 当前分支为 `master`/`main`/`dev` → 创建 `feat/feishu-{task_id 前 8 位}`
+   - 当前分支为 `feat/feishu-{本任务 id 前 8 位}` → 直接使用，输出 `[3.1-<repo>] 复用已有分支: <branch>`
+   - 当前分支为其他 `feat/xxx` → 通过 AskUserQuestion 询问用户：
+     ```
+     当前在分支 <branch>，不是主干分支。
+     如何处理？
+       ● 在当前分支继续开发（适合同一功能的延续）
+       ○ 新建独立分支 feat/feishu-{task_id 前 8 位}
+     ```
+     用户选"继续"→ 使用当前分支；选"新建"→ 创建新分支
 3. **强制输出 log**，每个仓库一行：
 
 ```
