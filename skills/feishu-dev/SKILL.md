@@ -451,7 +451,7 @@ PYTHONIOENCODING=utf-8 python3 "${CLAUDE_PLUGIN_ROOT}/scripts/log_providers/disp
 2. 判断：
    - 当前分支为 `master`/`main`/`dev` → 创建 `feat/feishu-{task_id 前 8 位}`
    - 当前分支为 `feat/feishu-{本任务 id 前 8 位}` → 直接使用，输出 `[3.1-<repo>] 复用已有分支: <branch>`
-   - 当前分支为其他 `feat/xxx` → 通过 AskUserQuestion 询问用户：
+   - 当前分支为其他任意分支（`develop`、`release/xxx`、`feat/other-task` 等，不是主干也不是本任务分支）→ 通过 AskUserQuestion 询问用户：
      ```
      当前在分支 <branch>，不是主干分支。
      如何处理？
