@@ -38,8 +38,9 @@ PYTHONIOENCODING=utf-8 python3 "${CLAUDE_PLUGIN_ROOT}/scripts/config_manager.py"
 
 📁 L1  ~/.claude/pipelit/config.json
   user_id        <值>                  <状态>
+  （仅存储跨项目的用户身份，凭据保存在 L2）
 
-📁 L2  .pipelit/config.json
+📁 L2  .claude/pipelit/config.json
   飞书
     app_id       <值>                  <状态>
     app_secret   ••••••                <状态>
@@ -55,7 +56,7 @@ PYTHONIOENCODING=utf-8 python3 "${CLAUDE_PLUGIN_ROOT}/scripts/config_manager.py"
     通知群        <值>                  <状态>
     触发模式      <值>                  <状态>
 
-📁 L2  .pipelit/guance_config.json
+📁 L2  .claude/pipelit/guance_config.json
     api_key      ••••••                <状态>
     workspace    <值>                  <状态>
     endpoint     <值>                  <状态>
@@ -103,8 +104,8 @@ PYTHONIOENCODING=utf-8 python3 "${CLAUDE_PLUGIN_ROOT}/scripts/config_manager.py"
 ```
 
 支持的字段：
-- `user_id`
-- `app_id` / `app_secret`（需成对存在，缺一个会提示错误）
+- `user_id`（存储在 L1 用户级，跨项目共享）
+- `app_id` / `app_secret`（存储在 L2 项目级，需成对存在）
 - `frontend_path` / `backend_path`
 - `release.chatId` / `release.feishuWikiUrl` / `release.projectName`
 - `bot.notify_chat_id` / `bot.trigger_mode`
