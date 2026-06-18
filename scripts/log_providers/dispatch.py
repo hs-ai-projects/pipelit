@@ -13,14 +13,14 @@ import pathlib
 
 _provider_dir = pathlib.Path(__file__).parent
 _scripts_dir = _provider_dir.parent
-USER_CONFIG_DIR = pathlib.Path.home() / ".claude" / "pipelit"
-CONFIG_FILE = USER_CONFIG_DIR / "config.json"
+if str(_scripts_dir) not in sys.path:
+    sys.path.insert(0, str(_scripts_dir))
+
+import feishu_api  # type: ignore
 
 
 def _read_config() -> dict:
-    if CONFIG_FILE.exists():
-        return json.loads(CONFIG_FILE.read_text(encoding="utf-8"))
-    return {}
+    return feishu_api.load_merged_config()
 
 
 def _resolve_provider(cfg: dict) -> str:
