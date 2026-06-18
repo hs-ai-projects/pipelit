@@ -39,20 +39,37 @@ PYTHONIOENCODING=utf-8 python3 "${CLAUDE_PLUGIN_ROOT}/scripts/feishu_api.py" get
 
 ### 若 `configured: false`：通过 AskUserQuestion 询问以下问题
 
-**问题 1：仓库数量**
+**首先自动检测仓库信息：**
+
+```bash
+PYTHONIOENCODING=utf-8 python3 "${CLAUDE_PLUGIN_ROOT}/scripts/feishu_api.py" detect_release_branch
+```
+
+记录返回的 `branch`、`version_file`、`version_updater` 作为向导的默认值。
+
+**问题 1：仓库数量与主分支**
+```
+检测到主分支为 `<detected_branch>`（置信度：`<detection_method>`）。
 ```
 这个项目有几个仓库需要发版？
-  ● 1 个（当前目录）
+  ● 1 个（当前目录，主分支：<detected_branch>）
   ○ 2 个（前端 + 后端，分别填路径）
-```
+
+若检测失败（`detection_method` 为 `"default"`），在选项旁括号说明：`（分支未检测到，请确认）`。
 
 **问题 2：版本号文件**
 ```
-版本号存在哪里？
-  ● package.json（前端/Node.js）
-  ○ pyproject.toml（Python）
-  ○ 两个都有
+检测到版本文件：`<detected_version_file>`（<detected_version_updater>）
 ```
+确认或选择版本号存储位置：
+  ● <detected_version_file>（检测到，推荐）
+  ○ package.json（Node.js 前端）
+  ○ pyproject.toml（Python）
+  ○ 其他（手动填写）
+
+若未检测到版本文件（`version_file` 为 null），展示原始选项列表，不带"推荐"标记。
+
+> 以下问题均为可选配置，选"跳过"不影响发版。发版完成后可随时通过 `/pipelit:config` 补充。
 
 **问题 3：Changelog 受众**
 ```
