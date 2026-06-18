@@ -930,6 +930,26 @@ def get_task_full(task_id: str, no_cache: bool = False) -> dict:
     videos = [a for a in attachments if a.get("type") == "video" and "path" in a]
     video_errors = [a for a in attachments if a.get("type") == "video" and "error" in a]
 
+    # 图片标注分析（若 image_annotator 可用）
+    image_annotations = {}
+    if images:
+        annotator = pathlib.Path(__file__).parent / "image_annotator.py"
+        for img in images:
+            img_path = img.get("path")
+            if not img_path:
+                continue
+            try:
+                r = subprocess.run(
+                    [sys.executable, str(annotator), "analyze", img_path],
+                    capture_output=True, text=True, timeout=15
+                )
+                if r.returncode == 0:
+                    ann = json.loads(r.stdout)
+                    if not ann.get("error"):
+                        image_annotations[img_path] = ann
+            except Exception:
+                pass  # annotator 失败不阻断主流程
+
     # 项目配置（三层合并）
     merged_cfg = load_merged_config()
     project_config = {
@@ -954,6 +974,7 @@ def get_task_full(task_id: str, no_cache: bool = False) -> dict:
         "has_images": len(images) > 0,
         "videos": videos,
         "has_videos": len(videos) > 0,
+        "image_annotations": image_annotations,
         "project_config": project_config,
     }
     if videos:
