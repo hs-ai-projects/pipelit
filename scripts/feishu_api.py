@@ -315,9 +315,6 @@ def detect_project_paths(cwd: str | None = None) -> dict:
     """自动检测前后端项目路径，用于首次配置向导。"""
     base = pathlib.Path(cwd) if cwd else pathlib.Path.cwd()
 
-    FRONTEND_MARKERS = ["package.json", "vite.config.ts", "vue.config.js", "next.config.js"]
-    BACKEND_MARKERS = ["pyproject.toml", "requirements.txt", "setup.py", "pom.xml", "build.gradle", "Cargo.toml"]
-
     def _detect_type(path: pathlib.Path) -> str | None:
         if (path / "package.json").exists():
             try:
