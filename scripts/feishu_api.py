@@ -311,6 +311,73 @@ def save_project_config(frontend_path: str = None, backend_path: str = None) -> 
     }
 
 
+def detect_project_paths(cwd: str | None = None) -> dict:
+    """自动检测前后端项目路径，用于首次配置向导。"""
+    base = pathlib.Path(cwd) if cwd else pathlib.Path.cwd()
+
+    FRONTEND_MARKERS = ["package.json", "vite.config.ts", "vue.config.js", "next.config.js"]
+    BACKEND_MARKERS = ["pyproject.toml", "requirements.txt", "setup.py", "pom.xml", "build.gradle", "Cargo.toml"]
+
+    def _detect_type(path: pathlib.Path) -> str | None:
+        if (path / "package.json").exists():
+            try:
+                pkg = json.loads((path / "package.json").read_text(encoding="utf-8"))
+                deps = {**pkg.get("dependencies", {}), **pkg.get("devDependencies", {})}
+                if "vue" in deps:
+                    return "vue"
+                if "react" in deps or "next" in deps:
+                    return "react"
+            except Exception:
+                pass
+            return "node"
+        if (path / "pyproject.toml").exists() or (path / "requirements.txt").exists():
+            return "python"
+        if (path / "pom.xml").exists():
+            return "java-maven"
+        if (path / "build.gradle").exists():
+            return "java-gradle"
+        if (path / "Cargo.toml").exists():
+            return "rust"
+        return None
+
+    result = {"frontend": None, "backend": None, "suggestions": []}
+
+    # 1. 检测当前目录
+    cur_type = _detect_type(base)
+    if cur_type in ("vue", "react", "node"):
+        result["frontend"] = {"path": str(base), "type": cur_type, "confidence": "high"}
+    elif cur_type in ("python", "java-maven", "java-gradle", "rust"):
+        result["backend"] = {"path": str(base), "type": cur_type, "confidence": "high"}
+
+    # 2. 扫描兄弟目录（最多检查 10 个，避免超时）
+    parent = base.parent
+    siblings = [p for p in parent.iterdir() if p.is_dir() and p != base][:10]
+    for sib in siblings:
+        sib_type = _detect_type(sib)
+        if not sib_type:
+            continue
+        if sib_type in ("vue", "react", "node") and not result["frontend"]:
+            result["frontend"] = {"path": str(sib), "type": sib_type, "confidence": "medium"}
+        elif sib_type in ("python", "java-maven", "java-gradle", "rust") and not result["backend"]:
+            result["backend"] = {"path": str(sib), "type": sib_type, "confidence": "medium"}
+
+    # 3. 生成用户可读的建议
+    if result["frontend"]:
+        conf = result["frontend"]["confidence"]
+        result["suggestions"].append(
+            f"前端: {result['frontend']['path']} ({result['frontend']['type']}, {conf})"
+        )
+    if result["backend"]:
+        conf = result["backend"]["confidence"]
+        result["suggestions"].append(
+            f"后端: {result['backend']['path']} ({result['backend']['type']}, {conf})"
+        )
+    if not result["frontend"] and not result["backend"]:
+        result["suggestions"].append("未检测到已知项目类型，请手动填写路径")
+
+    return result
+
+
 # ── L2 Project Config Helpers ─────────────────────────────────────────────────
 
 def _project_config_file(cwd: str | None = None) -> pathlib.Path:
@@ -1658,6 +1725,9 @@ def main():
             frontend = args[1] if len(args) > 1 and args[1] != "null" else None
             backend = args[2] if len(args) > 2 and args[2] != "null" else None
             out = save_project_config(frontend, backend)
+        elif cmd == "detect_project_paths":
+            cwd = args[1] if len(args) > 1 else None
+            out = detect_project_paths(cwd)
         elif cmd == "auth":
             out = auth()
         elif cmd == "print_auth_url":
