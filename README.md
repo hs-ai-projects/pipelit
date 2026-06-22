@@ -58,7 +58,7 @@ precheck → dry-run 预览 → 一次确认 → 全自动执行
 | 层 | 位置 | 内容 |
 |----|------|------|
 | L1 用户级 | `~/.claude/pipelit/config.json` | `user_id`（跨项目全局） |
-| L2 项目级 | `<cwd>/.pipelit/config.json` | 飞书凭据、项目路径、发版配置、bot |
+| L2 项目级 | `<cwd>/.claude/pipelit/config.json` | 飞书凭据、项目路径、发版配置、bot |
 | L3 仓库级 | `<repo>/.pipelit.json`（可选） | precheck 命令、特殊规则 |
 
 完整说明见 [docs/config-hierarchy.md](docs/config-hierarchy.md)。
@@ -70,8 +70,8 @@ precheck → dry-run 预览 → 一次确认 → 全自动执行
 在前端目录配置后，插件会自动在后端目录创建 extends 指针：
 
 ```
-ads-web/.pipelit/config.json   ← 完整配置（canonical）
-ads/.pipelit/config.json       ← {"extends": "/abs/path/ads-web/.pipelit/config.json"}
+ads-web/.claude/pipelit/config.json   ← 完整配置（canonical）
+ads/.claude/pipelit/config.json       ← {"extends": "/abs/path/ads-web/.claude/pipelit/config.json"}
 ```
 
 两个目录都可以直接使用所有 skill，读写自动路由到 canonical 文件。
@@ -118,7 +118,7 @@ L1 单独存放：
 }
 ```
 
-观测云配置独立存放于 `<cwd>/.pipelit/guance_config.json`：
+观测云配置独立存放于 `<cwd>/.claude/pipelit/guance_config.json`：
 ```json
 {
   "api_key": "观测云 API Key",

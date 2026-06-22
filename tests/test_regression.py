@@ -82,8 +82,8 @@ print("\n=== 6. load_merged_config 三层合并（Task 3.2）===")
 import tempfile, os
 with tempfile.TemporaryDirectory() as tmpdir:
     # 创建 L2
-    pipelit_dir = pathlib.Path(tmpdir) / ".pipelit"
-    pipelit_dir.mkdir()
+    pipelit_dir = pathlib.Path(tmpdir) / ".claude" / "pipelit"
+    pipelit_dir.mkdir(parents=True)
     (pipelit_dir / "config.json").write_text(
         json.dumps({"frontend_path": "/l2/frontend", "logProvider": "noop"}),
         encoding="utf-8"
@@ -118,7 +118,7 @@ print("\n=== 9. L2 工具函数（config-layer-write-fix）===")
 with tempfile.TemporaryDirectory() as tmpdir2:
     f = fa._project_config_file(cwd=tmpdir2)
     check("_project_config_file 返回正确路径",
-          str(f) == str(pathlib.Path(tmpdir2) / ".pipelit" / "config.json"))
+          str(f) == str(pathlib.Path(tmpdir2) / ".claude" / "pipelit" / "config.json"))
 
     fa._write_project_config({"app_id": "test_app"}, cwd=tmpdir2)
     read_back = fa._read_project_config(cwd=tmpdir2)
@@ -233,8 +233,8 @@ cm = importlib.util.module_from_spec(spec_cm); spec_cm.loader.exec_module(cm)
 
 with tempfile.TemporaryDirectory() as tmpdir_cm:
     # 写 L2 config
-    pipelit_dir = pathlib.Path(tmpdir_cm) / ".pipelit"
-    pipelit_dir.mkdir()
+    pipelit_dir = pathlib.Path(tmpdir_cm) / ".claude" / "pipelit"
+    pipelit_dir.mkdir(parents=True)
     (pipelit_dir / "config.json").write_text(json.dumps({
         "app_id": "cli_test", "app_secret": "secret",
         "frontend_path": tmpdir_cm,
@@ -297,7 +297,7 @@ with tempfile.TemporaryDirectory() as dir_a, tempfile.TemporaryDirectory() as di
     fa._write_project_config({"app_id": "cli_main", "frontend_path": dir_a}, cwd=dir_a)
 
     # dir_b 放 extends 指针
-    ptr_file = pathlib.Path(dir_b) / ".pipelit" / "config.json"
+    ptr_file = pathlib.Path(dir_b) / ".claude" / "pipelit" / "config.json"
     ptr_file.parent.mkdir(parents=True, exist_ok=True)
     canonical_path = str(fa._project_config_file(cwd=dir_a))
     ptr_file.write_text(json.dumps({"extends": canonical_path}), encoding="utf-8")
@@ -331,7 +331,7 @@ with tempfile.TemporaryDirectory() as front, tempfile.TemporaryDirectory() as ba
     check("save_project_config: canonical 有 backend_path", front_cfg.get("backend_path") == back)
 
     # back 应有 extends 指针指向 front
-    back_ptr_file = pathlib.Path(back) / ".pipelit" / "config.json"
+    back_ptr_file = pathlib.Path(back) / ".claude" / "pipelit" / "config.json"
     check("save_project_config: 指针文件存在于 backend 目录", back_ptr_file.exists())
     back_ptr = json.loads(back_ptr_file.read_text(encoding="utf-8"))
     check("save_project_config: 指针含 extends 字段", "extends" in back_ptr)

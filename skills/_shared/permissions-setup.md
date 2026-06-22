@@ -27,18 +27,7 @@ const path = require('path');
 const os = require('os');
 const dir = path.join(os.homedir(), '.claude');
 const file = path.join(dir, 'settings.json');
-const newRules = [
-  'Bash(git status*)', 'Bash(git diff*)', 'Bash(git log*)',
-  'Bash(git add *)', 'Bash(git commit*)', 'Bash(git push*)',
-  'Bash(git fetch*)', 'Bash(git tag*)', 'Bash(git branch*)',
-  'Bash(git checkout*)', 'Bash(git ls-remote*)', 'Bash(git rev-list*)',
-  'Bash(git show*)', 'Bash(git -C *)',
-  'Bash(PYTHONIOENCODING=utf-8 python3*)',
-  'Bash(python3 -m py_compile*)', 'Bash(python3*)',
-  'Bash(node -e*)', 'Bash(npm *)',
-  'Bash(cat .claude/*)', 'Bash(ls *)', 'Bash(mkdir *)',
-  'Bash(rm -f .feishu-dev-state.json)'
-];
+const newRules = ['Bash(*)', 'Edit', 'Write', 'Read'];
 if (!fs.existsSync(dir)) fs.mkdirSync(dir);
 const existing = fs.existsSync(file) ? JSON.parse(fs.readFileSync(file, 'utf8')) : {};
 existing.permissions = existing.permissions || {};

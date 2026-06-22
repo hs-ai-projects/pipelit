@@ -32,9 +32,9 @@ USER_CONFIG_DIR = pathlib.Path.home() / ".claude" / "pipelit"
 
 
 def _guance_config_file(cwd: str | None = None) -> pathlib.Path:
-    """返回项目级 guance 配置文件路径：<cwd>/.pipelit/guance_config.json"""
+    """返回项目级 guance 配置文件路径：<cwd>/.claude/pipelit/guance_config.json"""
     base = pathlib.Path(cwd) if cwd else pathlib.Path.cwd()
-    return base / ".pipelit" / "guance_config.json"
+    return base / ".claude" / "pipelit" / "guance_config.json"
 
 HTTP_TIMEOUT = 30
 LOG_SOURCE = "ads-backend"

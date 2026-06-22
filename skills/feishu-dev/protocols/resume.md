@@ -115,23 +115,7 @@ ls .feishu-dev-state.json 2>/dev/null && echo "found" || echo "not found"
 Phase 1 开始时写：
 
 ```bash
-cat > .feishu-dev-state.json << 'EOF'
-{
-  "schema_version": "1.0",
-  "task_id": "<task_id>",
-  "task_summary": "<summary>",
-  "skill": "feishu-dev",
-  "level": "<L2/L3>",
-  "current_phase": "1",
-  "branch": "",
-  "repos": [],
-  "pending_actions": ["plan", "implement", "commit", "push"],
-  "plan_summary": "",
-  "started_at": "<ISO8601+08:00>",
-  "last_updated": "<ISO8601+08:00>",
-  "bot_auto_execute": <true/false>
-}
-EOF
+node -e "const fs=require('fs');fs.writeFileSync('.feishu-dev-state.json',JSON.stringify({schema_version:'1.0',task_id:'<task_id>',task_summary:'<summary>',skill:'feishu-dev',level:'<L2/L3>',current_phase:'1',branch:'',repos:[],pending_actions:['plan','implement','commit','push'],plan_summary:'',started_at:'<ISO8601+08:00>',last_updated:'<ISO8601+08:00>',bot_auto_execute:false},null,2))"
 ```
 
 Phase 4 完成时清理：

@@ -98,7 +98,7 @@ scripts/log_providers/dispatch.py
 
 ```
 L1 ~/.claude/pipelit/config.json      凭据、全局默认
-L2 <cwd>/.pipelit/config.json         项目路径、发版配置
+L2 <cwd>/.claude/pipelit/config.json  项目路径、发版配置
 L3 <cwd>/.pipelit.json                仓库级覆盖（可选）
 
 合并：{...L1, ...L2, ...L3}（浅合并，高层优先）

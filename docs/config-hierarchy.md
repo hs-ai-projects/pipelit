@@ -9,7 +9,7 @@
 | 层级 | 位置 | 负责内容 |
 |------|------|---------|
 | **L1 用户级** | `~/.claude/pipelit/config.json` | 飞书凭据、观测云凭据、全局默认值 |
-| **L2 项目级** | `<cwd>/.pipelit/config.json` | 项目路径、发版配置、项目特有覆盖 |
+| **L2 项目级** | `<cwd>/.claude/pipelit/config.json` | 项目路径、发版配置、项目特有覆盖 |
 | **L3 仓库级** | `<repo>/.pipelit.json`（可选） | 单仓库 precheck 命令、特殊规则 |
 
 合并优先级：**L3 > L2 > L1**（高层覆盖低层，浅合并）。
@@ -43,7 +43,7 @@
 
 ---
 
-## L2 — 项目级（`<cwd>/.pipelit/config.json`）
+## L2 — 项目级（`<cwd>/.claude/pipelit/config.json`）
 
 项目路径、发版配置，放入仓库（不含凭据）。
 
@@ -88,7 +88,7 @@ def load_merged_config(cwd: str | None = None) -> dict:
 
 合并规则：
 1. 读 L1（`~/.claude/pipelit/config.json`）
-2. 读 L2（`<cwd>/.pipelit/config.json`，若存在）
+2. 读 L2（`<cwd>/.claude/pipelit/config.json`，若存在）
 3. 读 L3（`<cwd>/.pipelit.json`，若存在）
 4. 浅合并（dict 顶层覆盖，不递归合并嵌套对象）
 
@@ -98,7 +98,7 @@ def load_merged_config(cwd: str | None = None) -> dict:
 
 已有用户（原 `~/.claude/pipelit/config.json` 全量配置）：
 - **无需迁移**，旧格式继续作为 L1 生效
-- 可选：把 `frontend_path` / `backend_path` / `release` 挪到项目级 `.pipelit/config.json`
+- 可选：把 `frontend_path` / `backend_path` / `release` 挪到项目级 `.claude/pipelit/config.json`
 
 新项目上手：
 1. 全局配置凭据：`python3 feishu_api.py save_config <app_id> <app_secret>`
