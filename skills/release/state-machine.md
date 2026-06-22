@@ -19,9 +19,9 @@
 └────┬──────┘              └──────────┘
      │ 用户确认
      ↓
-┌───────────┐ commit/tag失败  ┌────────────┐
-│ COMMITTED │ ──────────────→ │ROLLBACK_READY│
-└────┬──────┘                  └────────────┘
+┌───────────┐ commit/tag失败  ┌──────────┐
+│ COMMITTED │ ──────────────→ │ BLOCKED  │（输出手动操作命令）
+└────┬──────┘                  └──────────┘
      │
      ↓
 ┌──────────┐ 任一push失败  ┌──────────────┐
@@ -48,7 +48,6 @@
 | `PREVIEWED` | Phase 2 完成 | 预览已展示给用户 |
 | `CANCELLED` | — | 用户在预览阶段取消 |
 | `COMMITTED` | Phase 3.2 完成 | commit + tag 已完成，未 push |
-| `ROLLBACK_READY` | — | commit/tag 失败，需人工决策 |
 | `PUSHING` | Phase 3.3 进行中 | 正在推送各仓库 |
 | `PARTIAL_PUSHED` | 部分仓库 push 失败 | 至少一个仓库未推送 |
 | `PUSHED` | Phase 3.3 全部完成 | 所有仓库已推送 |
@@ -109,7 +108,7 @@
 |-------|---------|
 | `BLOCKED` | 列出失败原因 → 等用户修复 → 重新 precheck |
 | `PREVIEWED` | 直接展示预览 → 等用户确认 |
-| `COMMITTED` | 进入 PUSHING（重新 push） |
+| `COMMITTED` | 输出手动操作命令，进入 PUSHING（重新 push） |
 | `PUSHING` | 继续 push 未完成的仓库 |
 | `PARTIAL_PUSHED` | 重试 `pushed: false` 的仓库 → 成功后进入 PUSHED |
 | `PUSHED` | 生成 manifest + changelog + 卡片 |
@@ -120,23 +119,5 @@
 
 - **COMMITTED → PUSHING 不能停**：commit 后必须 push，否则 next release 的 `range` 会错位
 - **PUSHED → COMPLETED 可失败**：manifest / changelog / 卡片失败不影响发版本身
-- **任何状态可走到 ROLLBACK_READY**：只输出回滚命令，不自动执行
 - **图片生成失败不阻断卡片发送**：降级链见 SKILL.md Phase 3.5b
 
-## 与 decision-log 的关系
-
-每个状态转换同时写入 decision-log 的 `release` schema（`docs/decision-log-schema.md` Phase 3.x）。
-
-```bash
-PYTHONIOENCODING=utf-8 python3 "${CLAUDE_PLUGIN_ROOT}/scripts/decision_log.py" phase <version> 3.x @/tmp/phase-state.json
-```
-
-```json
-{
-  "decision_type": "state_transition",
-  "from_state": "COMMITTED",
-  "to_state": "PUSHING",
-  "trigger": "auto",
-  "timestamp": "2026-06-05T10:10:00+08:00"
-}
-```

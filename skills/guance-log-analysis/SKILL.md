@@ -48,10 +48,17 @@ Step A：若 interfaces 不为空 → 带接口关键词过滤的精准查询（
         有结果 → 输出精简摘要（含 request/response payload），结束
         无结果 → 执行 Step B
 
-Step B：全量查询（不带过滤，查询所有 status 级别），取 top 高频；若 prompt 包含 bug 描述则优先匹配相关报错
+Step B：全量查询（不带过滤，查询所有 status 级别），取 top 高频；
+        若 prompt 包含 bug 描述（含"数据不准"/"数量不对"/"显示有误"等），
+        优先找与描述语义匹配的接口请求（不限 status），而非只取高频错误
 ```
 
 **查询范围**：不再只查 `error/warning/critical` 级别，改为查询**所有日志**（包括 2xx 正常请求），让 AI 能判断"是不是入参问题导致返回空数据"或"正常请求和异常请求的差异"。
+
+**数据准确性 bug 的额外要求**：当 bug 描述包含「数据不准」「数量不对」「显示有误」「和实际不符」等语义时，摘要**必须**包含：
+- 实际的 request payload（入参）
+- 实际的 response payload（返回值）
+- 供 AI 判断是后端逻辑问题还是数据源（StarRocks/DB）问题
 
 **调用命令**（静默模式用）：
 
@@ -68,23 +75,26 @@ PYTHONIOENCODING=utf-8 python3 "${CLAUDE_PLUGIN_ROOT}/scripts/guance_api.py" \
 ```
 ━━ 🔍 观测云 Log 摘要 ━━━━━━━━━━━━━━━━━
 时间段: <start> ~ <end>
-错误总数: <N> 条
+查询条数: <N> 条（含所有 status）
 关联接口: <接口路径，若有>
 
-高频报错:
-  • <接口路径> → <错误信息>  ×N 次
-    request: <请求 payload 摘要>
-    response: <响应 payload 摘要>
-  • <接口路径> → <错误信息>  ×N 次
-    request: <请求 payload 摘要>
+相关请求:
+  • <接口路径>  [<status_code>]  ×N 次
+    request:  <入参摘要，如 {adGroupId: 123, dateRange: "2026-06-01~06-07"}>
+    response: <返回摘要，如 {total: 0, data: []} 或 {error: "xxx"}>
 
-可能关联: <结合 bug 描述推断的关联点>
+（若有错误）高频报错:
+  • <接口路径> → <错误信息>  ×N 次
+    request:  <请求 payload 摘要>
+    response: <响应 payload 摘要>
+
+可能关联: <结合 bug 描述推断的关联点，如"入参 dateRange 格式疑似有误"或"返回 total=0 但实际有数据">
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 ```
 
 无数据时输出：
 ```
-该时段未发现相关错误日志（共查询 <N> 条记录）
+该时段未发现相关日志（共查询 <N> 条记录）
 ```
 
 ---

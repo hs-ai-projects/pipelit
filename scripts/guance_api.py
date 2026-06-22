@@ -239,8 +239,12 @@ def _dql(cfg: dict, q: str, start_ms: int, end_ms: int, limit: int) -> list[dict
         }]
     }
 
+    # 优先使用上次成功验证过的端点（根治多区域域名问题）
+    verified = cfg.get("verified_endpoint")
+    paths_to_try = ([verified] if verified else []) + [p for p in QUERY_PATHS if p != verified]
+
     last_err = None
-    for path in QUERY_PATHS:
+    for path in paths_to_try:
         url = cfg["base_url"] + path
         try:
             result = _post(url, cfg["api_key"], cfg.get("workspace_id", ""), body)
@@ -251,6 +255,13 @@ def _dql(cfg: dict, q: str, start_ms: int, end_ms: int, limit: int) -> list[dict
                 if code == 404:
                     continue  # 尝试下一个 path
                 raise RuntimeError(f"查询失败 (code={code})：{last_err}")
+
+            # 本次成功，持久化 verified_endpoint
+            if cfg.get("verified_endpoint") != path:
+                f = _guance_config_file()
+                cfg_data = json.loads(f.read_text(encoding="utf-8")) if f.exists() else {}
+                cfg_data["verified_endpoint"] = path
+                _secure_write(f, json.dumps(cfg_data, indent=2))
 
             # 解析 series → list[dict]
             # API 返回列式格式：content.data[0].series = [{columns:[t,col], values:[[t,v],...]}]

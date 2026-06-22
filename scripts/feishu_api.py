@@ -796,6 +796,34 @@ def lookup_user(email: str = None, mobile: str = None) -> dict:
     return {"user_id": user_list[0]["user_id"]}
 
 
+def get_users_display_names(open_ids: list[str]) -> dict:
+    """批量查询 open_id → 显示名，用于 card 预览展示真实姓名。
+    返回 {open_id: display_name}，查询失败的 key 降级到 open_id 本身。
+    """
+    if not open_ids:
+        return {}
+    token = get_token()
+    # 飞书联系人 API：批量获取用户信息
+    params = "&".join(f"user_ids={oid}" for oid in open_ids)
+    result = http(
+        "GET",
+        f"/open-apis/contact/v3/users/batch?user_id_type=open_id&{params}",
+        token=token,
+    )
+    mapping = {}
+    if result.get("code") == 0:
+        for user in result.get("data", {}).get("items", []):
+            oid = user.get("open_id", "")
+            name = user.get("name", "") or user.get("en_name", "") or oid
+            if oid:
+                mapping[oid] = name
+    # 未查到的降级到 open_id 本身
+    for oid in open_ids:
+        if oid not in mapping:
+            mapping[oid] = oid
+    return mapping
+
+
 def save_user(email: str = None, mobile: str = None) -> dict:
     """查找并保存当前用户的 user_id 到配置。"""
     user = lookup_user(email=email, mobile=mobile)
@@ -1822,6 +1850,11 @@ def main():
             email = args[args.index("--email") + 1] if "--email" in args else None
             mobile = args[args.index("--mobile") + 1] if "--mobile" in args else None
             out = save_user(email=email, mobile=mobile)
+        elif cmd == "get_users_display_names":
+            # 用法：get_users_display_names --open-ids "id1,id2,id3"
+            oids_raw = args[args.index("--open-ids") + 1] if "--open-ids" in args else ""
+            oids = [o.strip() for o in oids_raw.split(",") if o.strip()]
+            out = get_users_display_names(oids)
         elif cmd == "get_task":
             out = get_task(args[1])
         elif cmd == "list_tasks":

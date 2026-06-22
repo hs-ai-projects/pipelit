@@ -30,19 +30,6 @@ cat "${CLAUDE_PLUGIN_ROOT}/skills/_shared/permissions-setup.md"
 **L2 任务**：拉取需求（一次调用） → 补问 → **【确认 Plan】** → 自动实现+静态验证 → **【用户验证功能】** → 自动 commit+push+标记完成。仅 2 个人工介入点。
 **L3 任务**：拉取需求 → 分析定位 → 输出报告，不改代码，不 commit。
 
-## 续接检测（RESUME-CHECK）
-
-**启动时第一件事**（在 MODE-CHECK 之前）：按 `protocols/resume.md` 检查是否有未完成任务。
-
-```bash
-ls .feishu-dev-state.json 2>/dev/null && echo "found" || echo "not found"
-```
-
-- 若文件存在且 `last_updated` 距今 < 24h → 输出 `[RESUME-CHECK] 发现未完成任务: <task_summary>，Phase: <current_phase>` → AskUserQuestion（续接 / 放弃 / 仅查看）
-- 若文件不存在或 ≥ 24h → 跳过，正常走新任务流程
-
----
-
 ## 自动化模式（BOT_AUTO_EXECUTE）
 
 **[MODE-CHECK]** 启动时第二件事：检查 prompt 中是否包含 `BOT_AUTO_EXECUTE`，并**输出一行 log**：
@@ -106,9 +93,6 @@ PYTHONIOENCODING=utf-8 python3 "${CLAUDE_PLUGIN_ROOT}/scripts/feishu_api.py" lis
 ---
 
 ## Phase 1：拉取 + 理解需求（一次调用）
-
-> **写状态文件（仅 L2 任务，完成 1.1 拉取后立即写）**：
-> 按 `protocols/resume.md` schema 写 `.feishu-dev-state.json`，`current_phase: "1"`。
 
 ### 1.1 拉取任务全量上下文
 
@@ -218,35 +202,7 @@ PYTHONIOENCODING=utf-8 python3 "${CLAUDE_PLUGIN_ROOT}/scripts/guance_api.py" \
 
 按 `rules/classification.md` 的决策树执行判定，**按优先级自上而下匹配，命中即返回**。
 
-判定完成后：
-
-1. **输出一行 log**：`[1.3] 分级结果：<L2/L3>，命中规则：<规则名>，候选文件数=<N>，描述长度=<N>，截图=<有/无>`
-
-2. **写入 audit JSON**（通过 decision_log.py）：
-```bash
-PYTHONIOENCODING=utf-8 python3 "${CLAUDE_PLUGIN_ROOT}/scripts/decision_log.py" start feishu-dev <task_id> --summary "<summary>"
-PYTHONIOENCODING=utf-8 python3 "${CLAUDE_PLUGIN_ROOT}/scripts/decision_log.py" phase <task_id> 1.3 @/tmp/phase-1.3.json
-```
-
-3. **audit evidence 字段**（写入 `/tmp/phase-1.3.json`）：
-```json
-{
-  "decision_type": "level_classification",
-  "level": "L2",
-  "matched_rule": "default-l2",
-  "rule_priority": 6,
-  "evidence": {
-    "candidate_files": 2,
-    "desc_length": 132,
-    "has_screenshot": true,
-    "has_attachment": false,
-    "is_bug_task": false,
-    "matched_keywords": [],
-    "feishu_tags": []
-  },
-  "fallback_attempted": false
-}
-```
+判定完成后，**输出一行 log**：`[1.3] 分级结果：<L2/L3>，命中规则：<规则名>，候选文件数=<N>，描述长度=<N>，截图=<有/无>`
 
 **若为 L3**：输出分析报告后结束，不创建分支、不改代码、不 commit：
 
@@ -402,13 +358,13 @@ PYTHONIOENCODING=utf-8 python3 "${CLAUDE_PLUGIN_ROOT}/scripts/log_providers/disp
 > `log_summary` 赋值后在 Plan/报告中只展示真实摘要，not_configured/error/no_data 时静默跳过。
 > 若需切换 provider：在 `~/.claude/pipelit/config.json` 设置 `"logProvider": "noop"` 即可禁用日志查询。
 
+> **数据类 bug（数据不准/数量不对/显示有误）**：`log_summary` 必须包含实际 request payload 和 response payload，用于判断是后端逻辑问题还是数据源（StarRocks/DB）问题。
+
 > log_summary 结果：L2 任务嵌入 Phase 2 Plan，L3 任务嵌入 Phase 1.3 分析报告。
 
 ---
 
 ## Phase 2：Plan（用户确认）
-
-> **写状态文件（Plan 用户确认后更新）**：`current_phase: "2-done"`，`plan_summary: "<100字摘要>"`。
 
 ```
 ━━━ 实现计划 ━━━
@@ -435,11 +391,14 @@ PYTHONIOENCODING=utf-8 python3 "${CLAUDE_PLUGIN_ROOT}/scripts/log_providers/disp
 
 否则：等用户确认或修正后再进入 Phase 3。
 
+**⚠ Plan 修正规则（重要）**：若用户对 Plan 提出任何修改（包括增删改动点、调整范围、指出遗漏），必须：
+1. 输出修订版 Plan
+2. **再次等待**用户明确回复"确认"/"ok"/"没问题"
+3. **不得将"用户提出修改"本身视为确认**，修改后必须重走等待流程
+
 ---
 
 ## Phase 3：执行
-
-> **写状态文件（3.1 分支创建后更新）**：`current_phase: "3"`，`branch: "<分支名>"`，`repos: [...]`，`pending_actions: ["implement","commit","push"]`。
 
 ### 3.1 创建分支（每个仓库独立执行）
 
@@ -471,6 +430,12 @@ PYTHONIOENCODING=utf-8 python3 "${CLAUDE_PLUGIN_ROOT}/scripts/log_providers/disp
 ```
 [3.1-<repo>] 跳过原因: <reason>
 ```
+
+**范围联动（与 Phase 2 Plan「范围」字段挂钩）**：
+
+- 若 Plan 范围为「**仅前端**」→ 对后端仓库**跳过**分支创建，输出 `[3.1-backend] 跳过原因: 范围=仅前端`
+- 若 Plan 范围为「**仅后端**」→ 对前端仓库**跳过**分支创建，输出 `[3.1-frontend] 跳过原因: 范围=仅后端`
+- 若 Plan 范围为「**前后端**」→ 两个仓库都必须创建/确认分支，不可省略
 
 **反例（禁止）**：
 
@@ -508,8 +473,6 @@ python3 -m py_compile <changed_files>
 发现问题直接修掉，改动较大时在收尾报告里说明。
 
 ### 3.5 用户验证（第 2 个人工介入点）
-
-> **写状态文件（暂停前更新）**：`current_phase: "3.5"`，`pending_actions: ["commit","push","mark_done"]`。
 
 自检通过后，**暂停并让用户验证功能**：
 
@@ -583,8 +546,6 @@ Pushed: ✅ / 待推送
 飞书已完成: ✅ / 待确认
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 ```
-
-> **清理状态文件（Phase 4 完成后）**：`rm -f .feishu-dev-state.json`
 
 ---
 

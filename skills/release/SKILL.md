@@ -387,7 +387,7 @@ git -C "<repo_path>" tag -a <new_tag> -m "<从变更中提取的主题关键词>
 commit + tag 全部成功后，更新状态文件：
 - `state: "COMMITTED"`，`repos[].committed: true`，`repos[].tagged: true`
 
-任一仓库失败 → `state: "ROLLBACK_READY"`，中断流程，输出回滚命令。
+任一仓库失败 → `state: "BLOCKED"`，中断流程，输出失败原因和手动操作命令。
 
 ### 3.4 Push（状态 → PUSHING → PUSHED / PARTIAL_PUSHED）
 
@@ -576,7 +576,6 @@ backend  ❌ push 失败
   git -C "<backend_path>" push origin <new_tag>
 ```
 
-**默认不自动回滚**，仅输出命令。用户明确说"执行回滚"时才代为运行。
 
 ---
 
@@ -659,7 +658,17 @@ PYTHONIOENCODING=utf-8 python3 "${CLAUDE_PLUGIN_ROOT}/scripts/decision_log.py" f
 
 ### Phase 3.5b：卡片预览确认（发送前最后一道关卡）
 
-**在构建 sections 和参数文件之后、调用 `send_release_card_with_mentions` 之前**，必须展示预览并等待用户确认：
+**在构建 sections 和参数文件之后、调用 `send_release_card_with_mentions` 之前**，必须展示预览并等待用户确认。
+
+**预览前先查询收件人姓名**：
+
+```bash
+# 收集所有待 @ 的 open_id，批量查询显示名
+PYTHONIOENCODING=utf-8 python3 "${CLAUDE_PLUGIN_ROOT}/scripts/feishu_api.py" \
+  get_users_display_names --open-ids "<open_id1>,<open_id2>,..."
+```
+
+返回 `{<open_id>: <display_name>}` 映射，用于在预览中替换 open_id 为真实姓名。若查询失败则降级显示 open_id。
 
 ```
 ━━━ 卡片预览 ━━━
@@ -669,11 +678,11 @@ PYTHONIOENCODING=utf-8 python3 "${CLAUDE_PLUGIN_ROOT}/scripts/decision_log.py" f
 <按 sections 展示完整文本，每条带 @ 和 🔗 状态>
 
 新功能:
-  • <描述 A>  🔗 飞书任务（<task_id 前 8 位>）@ <open_id>
+  • <描述 A>  🔗 飞书任务（<task_id 前 8 位>）@ <姓名>
   • <描述 B>  （无关联任务，不 @）
 
 修复:
-  • <描述 C>  🔗 飞书任务（<task_id 前 8 位>）@ <open_id>
+  • <描述 C>  🔗 飞书任务（<task_id 前 8 位>）@ <姓名>
 
 图片来源: <mascot 参考图 → OpenAI 生成 / 本地图片 / 无图片>
 
