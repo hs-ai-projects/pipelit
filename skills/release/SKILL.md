@@ -243,8 +243,8 @@ git -C "<repo_path>" tag --sort=-creatordate | head -5
 后续所有 tag 名称、manifest range 均使用检测到的格式，**不强制添加或删除 `v`**。
 
 ```bash
-git -C "<repo_path>" log <last_tag>..HEAD --format="=== %h ===%n%B" --no-merges
-git -C "<repo_path>" log <last_tag>..HEAD --format="=== %h ===%n%B" --merges
+git -C "<repo_path>" log <last_tag>..HEAD --first-parent --format="=== %h ===%n%B" --no-merges
+git -C "<repo_path>" log <last_tag>..HEAD --first-parent --format="=== %h ===%n%B" --merges
 ```
 
 **从 commit body 提取 Feishu-Task（关键，避免 fuzzy 匹配）：**
@@ -258,13 +258,35 @@ git -C "<repo_path>" log <last_tag>..HEAD --format="=== %h ===%n%B" --merges
 **Merge commit 处理规则（关键，防止内容错乱）：**
 
 当存在 merge commit（如 `Merge branch 'feature/xxx' into 'master'`）时：
-- **直接取 merge commit 的分支名作为一条 changelog 条目**，不展开该分支内的所有子 commit
+- **不展开该分支内的所有子 commit，归为一条**
 - 分支内部的 `fix:` / `bugfix` commit 视为该 feature 的组成部分，**不单独列为独立修复条目**
 - 只有直接提交到 releaseBranch 上的 `fix:` commit（非 feature 分支内的）才单独列为修复
 
+**Merge commit 描述生成（业务化总结）：**
+
+merge commit 的分支名（如 `sonia`、`feature/xxx`）对业务方无意义，必须通过以下步骤生成可读描述：
+
+```bash
+# 提取该 merge 分支内的所有 commit subject（最多取 30 条）
+git -C "<repo_path>" log <merge_hash>^1..<merge_hash>^2 --format="%s" | head -30
+```
+
+拿到子 commit 列表后，**用 LLM 推理**（你自己）归纳出一句业务可理解的描述：
+- 找最高频的功能主题词（如"投放库"、"词库"、"广告组"）
+- 判断整体是新功能还是体验优化
+- 输出格式：`<功能模块>功能上线` 或 `<功能模块>优化`，不使用 feat/fix 前缀
+
 例：
 ```
-Merge branch 'feature/walmart-ads-module' → 归为一条「新功能：沃尔玛广告模块」
+Merge branch 'sonia'（子 commit 里大量出现"投放库"、"词库"）
+  → 总结为：「投放库功能上线」
+Merge branch 'feature/walmart-ads-module'（子 commit 里大量出现"沃尔玛"）
+  → 总结为：「沃尔玛广告模块上线」
+```
+
+例：
+```
+Merge branch 'feature/walmart-ads-module' → 「沃尔玛广告模块上线」
   └─ fix: eslint错误          ← 分支内，忽略
   └─ fix: 沃尔玛报表数据补全  ← 分支内，忽略
 fix: 今日时间逻辑             ← 直接在 master，单独列出
@@ -660,7 +682,7 @@ PYTHONIOENCODING=utf-8 python3 "${CLAUDE_PLUGIN_ROOT}/scripts/decision_log.py" f
 
 **在构建 sections 和参数文件之后、调用 `send_release_card_with_mentions` 之前**，必须展示预览并等待用户确认。
 
-**预览前先查询收件人姓名**：
+**预览前先查询收件人姓名和目标群名**：
 
 ```bash
 # 收集所有待 @ 的 open_id，批量查询显示名
@@ -670,10 +692,25 @@ PYTHONIOENCODING=utf-8 python3 "${CLAUDE_PLUGIN_ROOT}/scripts/feishu_api.py" \
 
 返回 `{<open_id>: <display_name>}` 映射，用于在预览中替换 open_id 为真实姓名。若查询失败则降级显示 open_id。
 
+```bash
+# 查询目标群名
+PYTHONIOENCODING=utf-8 python3 - <<'EOF'
+import sys, json
+sys.path.insert(0, "${CLAUDE_PLUGIN_ROOT}/scripts")
+import feishu_api as api
+token = api.get_token()
+result = api.http("GET", "/open-apis/im/v1/chats/<chat_id>", token=token)
+print(result.get("data", {}).get("name", "<chat_id>"))
+EOF
+```
+
+查询失败时降级显示 chat_id 本身。
+
 ```
 ━━━ 卡片预览 ━━━
 版本: <new_tag>
 日期: YYYY-MM-DD
+发送至: <群名>（<chat_id>）
 
 <按 sections 展示完整文本，每条带 @ 和 🔗 状态>
 
