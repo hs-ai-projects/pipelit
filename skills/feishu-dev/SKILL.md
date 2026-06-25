@@ -49,6 +49,24 @@ cat "${CLAUDE_PLUGIN_ROOT}/skills/_shared/permissions-setup.md"
 - **Phase 2 Plan 必须等用户确认**：不能自动跳过
 - 各 Phase 跳过用户验证前必须 re-check `[MODE-CHECK]` 标志
 
+## 分析模式（BOT_ANALYZE_ONLY）
+
+**[MODE-CHECK]** 同时检查 prompt 是否包含 `BOT_ANALYZE_ONLY`，追加输出：
+
+```
+[MODE-CHECK] BOT_ANALYZE_ONLY: <yes / no>
+```
+
+**若包含 `BOT_ANALYZE_ONLY`，进入分析专用模式（不执行任何代码修改）：**
+- 执行 Phase 1（拉取任务、附件处理、L2/L3 分级、定位文件）
+- L1 任务：Phase 1.3 判定后，输出 "L1 低风险，无需改动"，跳到本节末
+- L3 任务：Phase 1.3 判定后，输出 L3 分析报告（同普通流程），跳到本节末
+- L2 任务：执行 Phase 2，输出实现计划；**不等用户确认，不进入 Phase 3**
+- Phase 结束后，**必须**输出以下 JSON（单行，不换行）：
+  `[BOT_RESULT] {"level":"<L1/L2/L3>","type":"<bug/feature/docs>","summary":"<10字以内概要>","plan":["改动点1","改动点2"]}`
+  - L1/L3 的 `plan` 填 `[]`；L2 的 `plan` 填 Phase 2 改动列表（不超过 5 条）
+- 最后输出：`[BOT_ANALYZE_ONLY] done`
+
 ---
 
 脚本：`${CLAUDE_PLUGIN_ROOT}/scripts/feishu_api.py`

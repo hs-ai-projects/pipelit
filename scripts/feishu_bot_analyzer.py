@@ -3,10 +3,10 @@
 飞书 Bot 分析 & 执行核心 — 通用，不绑定任何具体项目或技术栈。
 
 职责：
-  1. analyze(task_id)          拉取任务 → claude --print 分类（L2/L3 × bug/feature）
-  2. execute(task_id, ...)     无交互执行：拉分支 → claude --print 改代码 → push → MR
-  3. pipeline(task_id)         完整流程入口（webhook 调用此函数）
-  4. execute_from_pending(...)  处理"需求确认"按钮点击
+  1. _run_feishu_dev_analyze(task_id)  调用 feishu-dev BOT_ANALYZE_ONLY：Phase 1+2，输出分析结果
+  2. execute(task_id, ...)             无交互执行：拉分支 → claude --print 改代码 → push → MR
+  3. pipeline(task_id)                 完整流程入口（webhook 调用此函数）
+  4. execute_from_pending(...)         处理"需求确认"按钮点击
 
 通用化设计：
   - 不假设技术栈，claude 自己读 CLAUDE.md 和代码判断
@@ -56,11 +56,22 @@ EXECUTION_MODEL = os.environ.get("BOT_EXECUTION_MODEL", "claude-sonnet-4-6")
 
 def log(msg: str) -> None:
     LOG_DIR.mkdir(parents=True, exist_ok=True)
-    ts   = time.strftime("%Y-%m-%d %H:%M:%S")
-    line = f"[{ts}] [analyzer] {msg}\n"
+    ts   = time.strftime("%H:%M:%S")
+    line = f"{ts} {msg}\n"
     with open(LOG_DIR / "webhook.log", "a", encoding="utf-8") as f:
         f.write(line)
     sys.stdout.write(line)
+    sys.stdout.flush()
+
+
+def log_section(title: str) -> None:
+    """打印视觉分隔线，标识一个新的 pipeline 开始。"""
+    bar  = "─" * 50
+    line = f"\n{bar}\n{time.strftime('%H:%M:%S')} {title}\n{bar}"
+    LOG_DIR.mkdir(parents=True, exist_ok=True)
+    with open(LOG_DIR / "webhook.log", "a", encoding="utf-8") as f:
+        f.write(line + "\n")
+    sys.stdout.write(line + "\n")
     sys.stdout.flush()
 
 
@@ -183,16 +194,8 @@ def run_claude_api(prompt: str, model: str = ANALYSIS_MODEL, timeout: int = 60,
     return msg.content[0].text
 
 
-def run_claude(prompt: str, cwd: str, model: str = EXECUTION_MODEL,
-               timeout: int = 600,
-               dangerously_skip_permissions: bool = False,
-               system_prompt: str = "") -> str:
-    """
-    在 cwd 目录执行 claude --print <prompt>，返回完整 stdout。
-    用于 execute 等需要 claude agent 读写文件的场景。
-    """
-    env = {**os.environ, "CLAUDE_PLUGIN_ROOT": str(PLUGIN_ROOT)}
-    # 优先用环境变量指定的路径，其次自动 fallback 到常见安装位置
+
+def _find_claude_bin() -> str:
     claude_bin = os.environ.get("CLAUDE_BIN", "claude")
     if claude_bin == "claude":
         for candidate in [
@@ -201,9 +204,24 @@ def run_claude(prompt: str, cwd: str, model: str = EXECUTION_MODEL,
             "/usr/local/bin/claude",
         ]:
             if os.path.isfile(candidate):
-                claude_bin = candidate
-                break
-    cmd = [claude_bin, "--print", prompt, "--model", model]
+                return candidate
+    return claude_bin
+
+
+def run_claude(prompt: str, cwd: str, model: str = EXECUTION_MODEL,
+               timeout: int = 600,
+               dangerously_skip_permissions: bool = False,
+               system_prompt: str = "") -> str:
+    """
+    用 stream-json 模式运行 claude，实时打印工具调用过程，返回最终文本。
+
+    stream-json 每行输出一个 JSON 事件，包括 tool_use、tool_result、text 等，
+    比 --print 多了工具调用的实时可见性。
+    """
+    env = {**os.environ, "CLAUDE_PLUGIN_ROOT": str(PLUGIN_ROOT)}
+    claude_bin = _find_claude_bin()
+    cmd = [claude_bin, "--print", "--output-format", "stream-json", "--verbose",
+           "--model", model, prompt]
     if dangerously_skip_permissions:
         cmd.append("--dangerously-skip-permissions")
     if system_prompt:
@@ -214,7 +232,6 @@ def run_claude(prompt: str, cwd: str, model: str = EXECUTION_MODEL,
         proc = subprocess.Popen(
             cmd, cwd=cwd, env=env,
             stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-            text=True, encoding='utf-8',
         )
     except FileNotFoundError:
         raise RuntimeError(
@@ -222,17 +239,65 @@ def run_claude(prompt: str, cwd: str, model: str = EXECUTION_MODEL,
         )
 
     import threading
-    stdout_lines: list[str] = []
+    result_text: list[str] = []
     stderr_lines: list[str] = []
 
-    def _read(pipe, buf, prefix):
-        for line in iter(pipe.readline, ""):
-            buf.append(line)
-            log(f"[claude:{prefix}] {line.rstrip()}")
+    def _read_stream(pipe):
+        """解析 stream-json 事件，实时打出工具调用，收集最终文本。"""
+        for raw_bytes in iter(pipe.readline, b""):
+            raw = raw_bytes.decode("utf-8", errors="replace").rstrip()
+            if not raw:
+                continue
+            try:
+                ev = json.loads(raw)
+            except json.JSONDecodeError:
+                log(f"[claude:raw] {raw[:200]}")
+                continue
+
+            ev_type = ev.get("type", "")
+
+            if ev_type == "assistant":
+                # 消息块：可能包含 text 或 tool_use
+                for block in ev.get("message", {}).get("content", []):
+                    btype = block.get("type", "")
+                    if btype == "text":
+                        text = block.get("text", "").strip()
+                        if text:
+                            log(f"[claude:text] {text[:300]}")
+                    elif btype == "tool_use":
+                        name  = block.get("name", "")
+                        inp   = block.get("input", {})
+                        # 只展示最有用的字段
+                        hint  = (inp.get("command") or inp.get("pattern") or
+                                 inp.get("file_path") or str(inp)[:80])
+                        log(f"[claude:tool] {name}({hint})")
+
+            elif ev_type == "tool_result":
+                content = ev.get("content", "")
+                if isinstance(content, list):
+                    content = " ".join(c.get("text", "") for c in content if isinstance(c, dict))
+                log(f"[claude:result] {str(content)[:150]}")
+
+            elif ev_type == "result":
+                # 最终结果
+                text = ev.get("result", "")
+                if text:
+                    result_text.append(text)
+                cost = ev.get("cost_usd")
+                if cost is not None:
+                    log(f"[claude:done] cost=${cost:.4f}")
+
         pipe.close()
 
-    t_out = threading.Thread(target=_read, args=(proc.stdout, stdout_lines, "out"), daemon=True)
-    t_err = threading.Thread(target=_read, args=(proc.stderr, stderr_lines, "err"), daemon=True)
+    def _read_stderr(pipe):
+        for raw_bytes in iter(pipe.readline, b""):
+            line = raw_bytes.decode("utf-8", errors="replace")
+            stderr_lines.append(line)
+            log(f"[claude:err] {line.rstrip()}")
+        pipe.close()
+
+    t_out = threading.Thread(target=_read_stream, args=(proc.stdout,), daemon=True)
+    t_err = threading.Thread(target=_read_stderr, args=(proc.stderr,), daemon=True)
     t_out.start(); t_err.start()
 
     try:
@@ -247,7 +312,7 @@ def run_claude(prompt: str, cwd: str, model: str = EXECUTION_MODEL,
         stderr_text = "".join(stderr_lines)[:300]
         raise RuntimeError(f"claude 退出码 {proc.returncode}：{stderr_text}")
 
-    return "".join(stdout_lines)
+    return "".join(result_text)
 
 
 def parse_json_from_output(text: str) -> dict:
@@ -652,184 +717,54 @@ def clear_pending(task_id: str) -> None:
     (PENDING_DIR / f"{task_id}.json").unlink(missing_ok=True)
 
 
+
 # ── 核心流程 ───────────────────────────────────────────────────────────────────
 
-def _collect_code_context(title: str, description: str, cfg: dict, global_cfg: dict) -> str:
+def _run_feishu_dev_analyze(task_id: str, user_feedback: str = "") -> dict:
     """
-    收集代码上下文供 Claude API 分析使用：文件树 + 关键词 grep。
-    完全在 Python 侧执行，不依赖 claude 工具调用。
+    调用 feishu-dev skill BOT_ANALYZE_ONLY 模式：执行 Phase 1+2，不改代码。
+
+    feishu-dev 会自主拉取任务、读代码库、做 L2/L3 分级，最后输出：
+      [BOT_RESULT] {"level":"L2","type":"bug","summary":"...","plan":[...]}
+      [BOT_ANALYZE_ONLY] done
+
+    返回 analysis dict：{"level", "type", "summary", "plan"}
     """
-    import re
+    cfg          = bot_cfg()
+    global_cfg   = read_config() or {}
+    frontend     = global_cfg.get("frontend_path", "")
+    backend      = global_cfg.get("backend_path", "") or cfg.get("project_path", "")
+    project_path = cfg.get("project_path") or frontend or backend or "."
 
-    # 收集所有项目路径
-    paths: list[tuple[str, str]] = []
-    seen_paths: set = set()
-    for key, label in [("project_path", "bot_project")]:
-        p = cfg.get(key, "")
-        if p and p not in seen_paths and pathlib.Path(p).exists():
-            paths.append((label, p)); seen_paths.add(p)
-    for key, label in [("frontend_path", "frontend"), ("backend_path", "backend")]:
-        p = global_cfg.get(key, "")
-        if p and p not in seen_paths and pathlib.Path(p).exists():
-            paths.append((label, p)); seen_paths.add(p)
-
-    if not paths:
-        return "（未配置项目路径）"
-
-    # 提取关键词
-    text = f"{title} {description}"
-    en_kws = [w for w in re.findall(r'[a-zA-Z][a-zA-Z0-9_]{2,}', text)
-              if w.lower() not in {'the','and','for','with','that','this','bug','fix','task'}]
-    zh_stop = {'修复','修改','更新','优化','处理','实现','添加','删除','解决','问题','任务','需要','完成'}
-    zh_kws  = [w for w in re.findall(r'[\u4e00-\u9fa5]{2,6}', text) if w not in zh_stop]
-    ui_map  = {'导航栏':['nav','navbar','sidebar'],'导航':['nav','navbar'],'字体':['font','color','style'],
-               '颜色':['color','theme'],'样式':['style','css'],'按钮':['button','btn'],
-               '弹窗':['modal','dialog'],'表格':['table'],'搜索':['search']}
-    extra = []
-    for zh, en_list in ui_map.items():
-        if zh in text: extra += en_list
-    keywords = list(dict.fromkeys(en_kws[:5] + zh_kws[:3] + extra))[:10]
-
-    blocks = []
-    for label, project_path in paths:
-        # 文件树（前2层）
-        try:
-            r = subprocess.run(["git","ls-tree","-r","--name-only","HEAD"],
-                cwd=project_path, capture_output=True, text=True, encoding="utf-8", timeout=8)
-            files = r.stdout.strip().splitlines() if r.returncode == 0 else []
-            tree  = "\n".join(sorted({"/".join(f.split("/")[:2]) for f in files})[:50])
-        except Exception:
-            tree = "（读取失败）"
-
-        # grep 关键词
-        hits: dict[str, list[str]] = {}
-        for kw in keywords[:6]:
-            try:
-                r = subprocess.run(["git","grep","-n","-i","--max-count=3", kw],
-                    cwd=project_path, capture_output=True, text=True, encoding="utf-8", timeout=6)
-                for line in r.stdout.strip().splitlines()[:15]:
-                    parts = line.split(":", 2)
-                    if len(parts) == 3:
-                        hits.setdefault(parts[0], []).append(f"  L{parts[1]}: {parts[2][:100]}")
-            except Exception:
-                continue
-
-        grep_text = ""
-        if hits:
-            grep_lines = ["\n【grep 命中】"]
-            total = 0
-            for fp, lines in list(hits.items())[:10]:
-                block = f"\n▶ {fp}\n" + "\n".join(lines[:5])
-                if total + len(block) > 3000: break
-                grep_lines.append(block); total += len(block)
-            grep_text = "\n".join(grep_lines)
-        else:
-            grep_text = "\n【grep 命中】（关键词未命中，根据文件结构和任务描述判断）"
-
-        blocks.append(f"=== [{label}] {project_path} ===\n【文件结构】\n{tree}{grep_text}")
-
-    return "\n\n".join(blocks)
-
-
-def analyze(task_id: str, user_feedback: str = "") -> tuple[dict, dict]:
-    """
-    调用本地 claude --print，让 claude 作为 agent 自主读取代码库，精确分级。
-
-    与之前 API 调用的区别：
-    - claude 有 Bash/Read/Grep 工具，能自主 grep、读文件，不依赖我们手动喂数据
-    - 分析质量对标 feishu-dev skill
-    - 不需要 ANTHROPIC_API_KEY，用本地已登录账号
-
-    analysis 结构：
-      {
-        "level":     "L1" | "L2" | "L3",
-        "type":      "bug" | "feature" | "docs",
-        "summary":   "一句话概括",
-        "plan":      ["具体改动点1（含文件路径）", "改动点2"],
-        "reason":    "分级理由（引用具体文件/行号）"
-      }
-    """
-    log(f"[analyze] task_id={task_id}")
-    task_data = _feishu_api("get_task_full", task_id)
-    task      = task_data["task"]
-
-    comments_text = "\n".join(
-        f"- {c.get('content', '')}" for c in task.get("comments", [])
-    ) or "（无评论）"
-
-    title       = task["summary"]
-    description = task.get("description", "")
-
-    # 任务附件图片（get_task_full 已自动下载到本地）
-    image_paths = [img["path"] for img in task_data.get("images", []) if img.get("path")]
-    if image_paths:
-        log(f"[analyze] found {len(image_paths)} attachment(s)")
-
-    # 收集项目路径，告知 claude 在哪里读代码
-    cfg        = bot_cfg()
-    global_cfg = read_config() or {}
-    paths_info = []
-    for key in ("project_path",):
-        p = cfg.get(key, "")
-        if p and pathlib.Path(p).exists():
-            paths_info.append(f"- bot_project: {p}")
-    for key, label in (("frontend_path", "frontend"), ("backend_path", "backend")):
-        p = global_cfg.get(key, "")
-        if p and pathlib.Path(p).exists():
-            paths_info.append(f"- {label}: {p}")
-    # 去重
-    seen: set = set()
-    unique_paths_info = []
-    for line in paths_info:
-        p = line.split(": ", 1)[-1]
-        if p not in seen:
-            seen.add(p)
-            unique_paths_info.append(line)
-
-    # ── 收集代码上下文（自己 grep，不依赖 claude 工具调用）─────────────────────
-    code_context = _collect_code_context(title, description, cfg, global_cfg)
-
-    prompt = f"""你是一个研发任务分级器。根据飞书任务内容和下方已提取的代码上下文，判断任务级别，仅返回 JSON，不要其他内容。
-
-## 任务信息
-
-标题：{title}
-描述：{description or '（无描述）'}
-评论：
-{comments_text}
-
-## 代码库上下文（已提前 grep 提取）
-
-{code_context}
-
-## 返回格式（严格 JSON）
-
-{{
-  "level":   "L1" 或 "L2" 或 "L3",
-  "type":    "bug" 或 "feature" 或 "docs",
-  "summary": "动词+宾语，10字以内（如：campaign列表按规则置顶）",
-  "plan":    ["src/pages/Foo.vue → 列表渲染前按 has_rule 排序", "改动点2，同格式"],
-  "reason":  "分级理由，引用具体文件名"
-}}
-
-## 分级规则
-
-**判断原则：优先从任务意图判断，代码上下文作为辅助，grep 未命中 ≠ L3。**
-
-**L1**：纯文档/配置/版本号，不改业务逻辑和接口
-**L2**：改动范围清晰，能列出具体文件，≤5个文件。典型：改样式、修单个 bug、调整接口逻辑
-**L3**：架构调整/模块重构/跨三层改动/改动文件>5个/任务本身极度模糊"""
-
-    # 有用户反馈时附加到 prompt 末尾
+    prompt = f"BOT_ANALYZE_ONLY 帮我完成飞书任务 {task_id}"
     if user_feedback:
         prompt += f"\n\n## 用户反馈（上次分析有误，请重点参考）\n\n{user_feedback}"
 
-    log(f"[analyze] calling claude api")
-    output   = run_claude_api(prompt, model=ANALYSIS_MODEL, timeout=90,
-                              image_paths=image_paths if image_paths else None)
-    analysis = parse_json_from_output(output)
-    log(f"[analyze] result={json.dumps(analysis, ensure_ascii=False)}")
-    return task_data, analysis
+    # 在 PLUGIN_ROOT 跑，避免业务项目 memory/skill 路由干扰
+    cwd = str(PLUGIN_ROOT)
+    log(f"[feishu-dev:analyze] task={task_id}")
+    log(f"[feishu-dev:analyze] cwd={cwd}")
+
+    output = run_claude(
+        prompt, cwd=cwd,
+        model=ANALYSIS_MODEL, timeout=300,
+        dangerously_skip_permissions=True,
+    )
+
+    log(f"[feishu-dev:analyze] output_len={len(output)}")
+
+    # 解析 [BOT_RESULT] JSON
+    m = re.search(r'\[BOT_RESULT\]\s*(\{[^\n]+\})', output)
+    if m:
+        try:
+            analysis = json.loads(m.group(1))
+            log(f"[feishu-dev:analyze] result:\n{json.dumps(analysis, ensure_ascii=False, indent=2)}")
+            return analysis
+        except json.JSONDecodeError as e:
+            log(f"[feishu-dev:analyze] JSON parse error: {e}, raw: {m.group(1)[:200]}")
+
+    log(f"[feishu-dev:analyze] WARNING: [BOT_RESULT] not found, using fallback")
+    return {"level": "L2", "type": "feature", "summary": task_id[:8], "plan": []}
 
 
 def execute(task_id: str, task_data: dict, analysis: dict) -> dict:
@@ -934,37 +869,65 @@ def pipeline(task_id: str) -> None:
     """
     完整流程入口，由 webhook 在后台线程中调用。
 
-    L1  → 发通知卡片（低风险，纯文档/配置）
-    L3  → 发分析报告卡片（复杂任务，不执行）
-    L2  → 发分析确认卡片（所有 L2 都需要用户点击确认后才执行）
+    notify 模式（默认）→ feishu-dev BOT_ANALYZE_ONLY → 发确认卡片 → 等用户点击
+    spawn  模式        → feishu-dev BOT_AUTO_EXECUTE  → 全自动执行，不等确认
     """
     # if _is_debounced(task_id):
     #     return
 
-    cfg     = bot_cfg()
-    chat_id = cfg["notify_chat_id"]
+    cfg          = bot_cfg()
+    chat_id      = cfg["notify_chat_id"]
+    trigger_mode = cfg.get("trigger_mode", "notify")
 
-    # 先发"分析中"提示，避免用户以为没响应
+    log_section(f"pipeline  task={task_id[:8]}  mode={trigger_mode}")
     send_message(chat_id, f"🔍 收到任务 {task_id[:8]}，正在分析...")
 
+    # 拉取任务基本信息（用于卡片标题和 pending 存储）
     try:
-        task_data, analysis = analyze(task_id)
+        task_data = _feishu_api("get_task_full", task_id)
     except Exception as e:
         err = str(e)
-        # 无权限读取任务（Bot 不是该任务的成员），静默跳过，不打扰群聊
         if "1470403" in err or "unauthorized" in err.lower():
             log(f"[pipeline] no permission to read task {task_id[:8]}, skip")
             return
-        log(f"[pipeline] analyze failed: {e}")
-        send_message(chat_id, f"❌ 任务分析失败：{e}")
+        log(f"[pipeline] fetch task failed: {e}")
+        send_message(chat_id, f"❌ 拉取任务失败：{e}")
         return
 
     task    = task_data["task"]
     summary = task["summary"]
-    level   = analysis.get("level", "L2")
-    t_type  = analysis.get("type", "bug")
 
-    # 分析成功，记录时间（防抖从此刻开始计）
+    # ── spawn 模式：直接调 feishu-dev 全自动执行 ────────────────────────────
+    if trigger_mode == "spawn":
+        log(f"[pipeline] spawn mode, calling feishu-dev BOT_AUTO_EXECUTE")
+        send_message(chat_id, f"🚀 spawn 模式，自动开始执行：{summary}")
+        try:
+            result = _run_feishu_dev(task_id, task_data=task_data)
+            _mark_analyzed(task_id)
+            if result.get("is_l3"):
+                # feishu-dev 判定 L3，只输出了分析报告，未改代码
+                log(f"[pipeline] spawn: feishu-dev returned L3, sending analysis card")
+                analysis = {"summary": summary, "plan": []}
+                send_card(chat_id, build_l3_card(task_id, summary, analysis))
+            else:
+                t_type = "bug" if "fix" in result.get("branch", "") else "feature"
+                send_card(chat_id, build_result_card(task_id, summary, result, t_type))
+        except Exception as e:
+            log(f"[pipeline] spawn execute failed: {e}")
+            send_card(chat_id, build_error_card(task_id, summary, str(e)))
+        return
+
+    # ── notify 模式：先分析（BOT_ANALYZE_ONLY），再发确认卡片 ────────────────
+    try:
+        analysis = _run_feishu_dev_analyze(task_id)
+    except Exception as e:
+        log(f"[pipeline] analyze failed: {e}")
+        send_message(chat_id, f"❌ 任务分析失败：{e}")
+        return
+
+    level  = analysis.get("level", "L2")
+    t_type = analysis.get("type", "bug")
+
     _mark_analyzed(task_id)
 
     if level == "L1":
@@ -975,8 +938,9 @@ def pipeline(task_id: str) -> None:
         send_card(chat_id, build_l3_card(task_id, summary, analysis))
         return
 
-    # L2：保存分析结果供"确认开发"按钮使用，再发卡片
+    # L2：保存分析结果供"确认开发"按钮使用，再发确认卡片
     save_pending(task_id, task_data, analysis)
+
     if t_type == "bug":
         send_card(chat_id, build_bug_card(task_id, summary, analysis))
     else:
@@ -1037,7 +1001,8 @@ def reanalyze_with_feedback(task_id: str, feedback: str) -> None:
     send_message(chat_id, f"🔄 收到反馈，重新分析中...")
 
     try:
-        task_data, analysis = analyze(task_id, user_feedback=feedback)
+        task_data = _feishu_api("get_task_full", task_id)
+        analysis  = _run_feishu_dev_analyze(task_id, user_feedback=feedback)
     except Exception as e:
         log(f"[reanalyze] failed: {e}")
         send_message(chat_id, f"❌ 重新分析失败：{e}")
@@ -1108,9 +1073,12 @@ def _run_feishu_dev(task_id: str, task_data: dict | None = None, analysis: dict 
 
     prompt = f"BOT_AUTO_EXECUTE 帮我完成飞书任务 {task_id}{task_info}{plan_text}"
 
+    # 在 PLUGIN_ROOT 跑，避免业务项目 memory/skill 路由干扰
+    # feishu-dev skill 内部会 cd 到 frontend_path/backend_path 做 git 操作
+    cwd = str(PLUGIN_ROOT)
     log(f"[feishu-dev] ── 开始执行 ──────────────────────────────")
     log(f"[feishu-dev] task      = {task_id}")
-    log(f"[feishu-dev] cwd       = {project_path}")
+    log(f"[feishu-dev] cwd       = {cwd}")
     log(f"[feishu-dev] frontend  = {frontend}")
     log(f"[feishu-dev] backend   = {backend}")
     log(f"[feishu-dev] is_fe     = {is_frontend}  is_be = {is_backend}")
@@ -1120,7 +1088,7 @@ def _run_feishu_dev(task_id: str, task_data: dict | None = None, analysis: dict 
     log(f"[feishu-dev] ──────────────────────────────────────────")
 
     output = run_claude(
-        prompt, cwd=project_path,
+        prompt, cwd=cwd,
         model=EXECUTION_MODEL, timeout=600,
         dangerously_skip_permissions=True,
     )
@@ -1132,21 +1100,48 @@ def _run_feishu_dev(task_id: str, task_data: dict | None = None, analysis: dict 
     log(f"[feishu-dev] ──────────────────────────────────────────")
 
     # 从输出里提取结果
-    import re as _re
-    branch  = ""
-    mr_url  = ""
+    branch        = ""
+    mr_url        = ""
+    files_changed = ""
+    commit_hash   = ""
+    file_lines: list[str] = []
+    in_files_section = False
+
     for line in output.splitlines():
-        if "Branch:" in line:
+        # Branch: feat/feishu-xxx
+        if "Branch:" in line and not line.strip().startswith("#"):
             branch = line.split("Branch:")[-1].strip()
-        urls = _re.findall(r'https?://[^\s\)]+', line)
+        # Commit: abc1234 feat: ...
+        if "Commit:" in line:
+            commit_hash = line.split("Commit:")[-1].strip().split()[0]
+        # MR/PR URL
+        urls = re.findall(r'https?://[^\s\)]+', line)
         for u in urls:
             if any(k in u for k in ("merge_requests", "pulls", "gitlab", "github")):
                 mr_url = u
                 break
+        # 改了: 段落（feishu-dev 报告格式：改了:\n  • file (+N -M)）
+        stripped = line.strip()
+        if stripped.startswith("改了:"):
+            in_files_section = True
+            continue
+        if in_files_section:
+            if stripped.startswith("•"):
+                file_lines.append(stripped.lstrip("• ").strip())
+            elif stripped and not stripped.startswith("•"):
+                in_files_section = False
 
-    log(f"[feishu-dev] branch={branch!r} mr_url={mr_url!r}")
+    if file_lines:
+        files_changed = ", ".join(file_lines)
+    if commit_hash and files_changed:
+        files_changed = f"{files_changed}  ({commit_hash})"
+
+    # 检测 feishu-dev 是否因 L3 停止（只输出报告，没有执行代码改动）
+    is_l3 = ("L3 分析报告" in output or "此任务复杂度较高" in output)
+
+    log(f"[feishu-dev] branch={branch!r} mr_url={mr_url!r} files={files_changed!r} is_l3={is_l3}")
     return {"success": True, "branch": branch, "mr_url": mr_url,
-            "files_changed": "", "error": None}
+            "files_changed": files_changed, "error": None, "is_l3": is_l3, "output": output}
 
 
 # ── CLI 入口（方便本地测试）────────────────────────────────────────────────────
@@ -1302,7 +1297,7 @@ def main() -> None:
     if cmd == "pipeline":
         pipeline(task_id)
     elif cmd == "analyze":
-        task_data, analysis = analyze(task_id)
+        analysis = _run_feishu_dev_analyze(task_id)
         print(json.dumps(analysis, ensure_ascii=False, indent=2))
     elif cmd == "execute":
         pending = load_pending(task_id)
