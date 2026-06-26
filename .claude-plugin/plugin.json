@@ -1,6 +1,6 @@
 {
   "name": "pipelit",
-  "version": "0.3.1",
+  "version": "0.3.2",
   "description": "AI 研发流程自动化插件 — 飞书任务、版本发布、changelog 全链路打通",
   "author": {
     "name": "hs-ai-projects",
