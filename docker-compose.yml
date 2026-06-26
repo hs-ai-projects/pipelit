@@ -3,34 +3,21 @@ services:
     build: .
     restart: unless-stopped
     environment:
-      # Claude
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY}
-
-      # 飞书应用凭据
-      FEISHU_APP_ID: ${FEISHU_APP_ID}
-      FEISHU_APP_SECRET: ${FEISHU_APP_SECRET}
-      FEISHU_USER_ID: ${FEISHU_USER_ID}
-      FEISHU_ENCRYPT_KEY: ${FEISHU_ENCRYPT_KEY}
-      FEISHU_CHAT_ID: ${FEISHU_CHAT_ID}
-
-      # GitLab
       GITLAB_TOKEN: ${GITLAB_TOKEN}
       GIT_USER_EMAIL: ${GIT_USER_EMAIL}
       GIT_USER_NAME: ${GIT_USER_NAME:-pipelit-bot}
-
-      # 仓库地址（https:// 开头，不含 token）
-      PIPELIT_REPO: ${PIPELIT_REPO}   # 例：https://gitlab.com/you/pipelit.git
-      PROJECT_REPO: ${PROJECT_REPO}   # 例：https://gitlab.com/you/your-project.git
+      PIPELIT_REPO: ${PIPELIT_REPO}
+      FRONTEND_REPO: ${FRONTEND_REPO}
+      BACKEND_REPO: ${BACKEND_REPO}
 
     volumes:
-      # L1 配置 + token 缓存（~/.claude/pipelit/）
-      - claude-pipelit:/root/.claude/pipelit
-      # 业务项目代码（含 L2 配置 .claude/pipelit/config.json）
-      - project-code:/app/project
-      # pipelit 代码（scripts + skills）
+      - /root/.claude/pipelit:/root/.claude/pipelit   # 挂载已有 config
       - pipelit-code:/app/pipelit
+      - frontend-code:/app/ads-web
+      - backend-code:/app/ads
 
 volumes:
-  claude-pipelit:
-  project-code:
   pipelit-code:
+  frontend-code:
+  backend-code:

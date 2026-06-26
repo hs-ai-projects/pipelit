@@ -2,66 +2,41 @@
 set -e
 
 PIPELIT_DIR="/app/pipelit"
-PROJECT_DIR="/app/project"
+FRONTEND_DIR="/app/ads-web"
+BACKEND_DIR="/app/ads"
 
 # ── 1. Clone pipelit ──────────────────────────────────────────────
-echo "[entrypoint] cloning pipelit..."
+echo "[entrypoint] syncing pipelit..."
 if [ -d "$PIPELIT_DIR/.git" ]; then
   git -C "$PIPELIT_DIR" pull --ff-only
 else
   git clone "https://oauth2:${GITLAB_TOKEN}@${PIPELIT_REPO#https://}" "$PIPELIT_DIR"
 fi
 
-# ── 2. Clone 业务项目 ─────────────────────────────────────────────
-echo "[entrypoint] cloning project..."
-if [ -d "$PROJECT_DIR/.git" ]; then
-  git -C "$PROJECT_DIR" pull --ff-only
+# ── 2. Clone 前端 ─────────────────────────────────────────────────
+echo "[entrypoint] syncing frontend (ads-web)..."
+if [ -d "$FRONTEND_DIR/.git" ]; then
+  git -C "$FRONTEND_DIR" pull --ff-only
 else
-  git clone "https://oauth2:${GITLAB_TOKEN}@${PROJECT_REPO#https://}" "$PROJECT_DIR"
+  git clone "http://oauth2:${GITLAB_TOKEN}@${FRONTEND_REPO#http://}" "$FRONTEND_DIR"
 fi
 
-# ── 3. 配置 git 身份（push MR 需要）─────────────────────────────
+# ── 3. Clone 后端 ─────────────────────────────────────────────────
+echo "[entrypoint] syncing backend (ads)..."
+if [ -d "$BACKEND_DIR/.git" ]; then
+  git -C "$BACKEND_DIR" pull --ff-only
+else
+  git clone "http://oauth2:${GITLAB_TOKEN}@${BACKEND_REPO#http://}" "$BACKEND_DIR"
+fi
+
+# ── 4. 配置 git 身份 ──────────────────────────────────────────────
 git config --global user.email "${GIT_USER_EMAIL}"
 git config --global user.name "${GIT_USER_NAME:-pipelit-bot}"
 
-# ── 4. 写 L1 配置：~/.claude/pipelit/config.json（user_id）──────
-L1_DIR="$HOME/.claude/pipelit"
-mkdir -p "$L1_DIR"
-if [ ! -f "$L1_DIR/config.json" ]; then
-  echo "[entrypoint] writing L1 config (user_id)..."
-  cat > "$L1_DIR/config.json" <<EOF
-{
-  "user_id": "${FEISHU_USER_ID}"
-}
-EOF
-fi
-
-# ── 5. 写 L2 配置：$PROJECT_DIR/.claude/pipelit/config.json ──────
-L2_DIR="$PROJECT_DIR/.claude/pipelit"
-mkdir -p "$L2_DIR"
-if [ ! -f "$L2_DIR/config.json" ]; then
-  echo "[entrypoint] writing L2 config (app credentials + bot)..."
-  cat > "$L2_DIR/config.json" <<EOF
-{
-  "app_id": "${FEISHU_APP_ID}",
-  "app_secret": "${FEISHU_APP_SECRET}",
-  "bot": {
-    "port": 8765,
-    "encrypt_key": "${FEISHU_ENCRYPT_KEY}",
-    "notify_chat_id": "${FEISHU_CHAT_ID}",
-    "trigger_mode": "spawn",
-    "project_path": "${PROJECT_DIR}",
-    "gitlab_token": "${GITLAB_TOKEN}",
-    "trigger_events": ["task_assigned", "task_created"]
-  }
-}
-EOF
-fi
-
-# ── 6. 启动 bot（cwd 必须是 project_dir，L2 config 靠 cwd 定位）──
+# ── 5. 启动 bot ───────────────────────────────────────────────────
 export CLAUDE_PLUGIN_ROOT="$PIPELIT_DIR"
 export ANTHROPIC_API_KEY="${ANTHROPIC_API_KEY}"
 
-echo "[entrypoint] starting feishu bot (longpoll) from $PROJECT_DIR..."
-cd "$PROJECT_DIR"
+echo "[entrypoint] starting feishu bot..."
+cd "$FRONTEND_DIR"
 exec python3 "$PIPELIT_DIR/scripts/feishu_bot_longpoll.py" serve
