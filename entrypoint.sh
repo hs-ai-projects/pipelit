@@ -30,8 +30,8 @@ else
 fi
 
 # ── 4. 配置 git 身份 ──────────────────────────────────────────────
-git config --global user.email "${GIT_USER_EMAIL}"
-git config --global user.name "${GIT_USER_NAME:-pipelit-bot}"
+git config --global user.email "pipelit-bot@bot.local"
+git config --global user.name "pipelit-bot"
 
 # ── 5. 启动 bot ───────────────────────────────────────────────────
 export CLAUDE_PLUGIN_ROOT="$PIPELIT_DIR"
