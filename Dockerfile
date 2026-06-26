@@ -1,4 +1,4 @@
-FROM python:3.11-slim
+FROM docker.m.daocloud.io/library/python:3.11-slim
 
 RUN apt-get update && apt-get install -y git curl \
     && curl -fsSL https://deb.nodesource.com/setup_20.x | bash - \
