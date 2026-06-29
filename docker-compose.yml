@@ -4,6 +4,7 @@ services:
     restart: unless-stopped
     environment:
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY}
+      ANTHROPIC_BASE_URL: ${ANTHROPIC_BASE_URL}
       GITLAB_TOKEN: ${GITLAB_TOKEN}
       PIPELIT_REPO: ${PIPELIT_REPO}
       FRONTEND_REPO: ${FRONTEND_REPO}
