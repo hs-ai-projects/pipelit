@@ -602,12 +602,15 @@ def build_feedback_input_card(task_id: str, summary: str) -> dict:
 def build_result_card(task_id: str, summary: str, result: dict,
                       task_type: str = "bug") -> dict:
     """修复 / 实现完成 — 绿色，含 MR 链接。task_type: 'bug' | 'feature'"""
-    mr_url  = result.get("mr_url", "")
-    branch  = result.get("branch", "")
-    files   = result.get("files_changed", "")
-    emoji   = "🐛" if task_type == "bug" else "✨"
-    label   = "Bug 已自动修复" if task_type == "bug" else "需求已自动实现"
-    mr_line = f"\n**MR：** [{mr_url}]({mr_url})" if mr_url else ""
+    mr_url     = result.get("mr_url", "")
+    branch     = result.get("branch", "")
+    files      = result.get("files_changed", "") or "无"
+    what_done  = result.get("what_done", "")
+    emoji      = "🐛" if task_type == "bug" else "✨"
+    label      = "Bug 已自动修复" if task_type == "bug" else "需求已自动实现"
+    mr_line    = f"\n**MR：** [{mr_url}]({mr_url})" if mr_url else ""
+    branch_line = f"\n**分支：** `{branch}`" if branch else ""
+    what_line   = f"\n**内容：** {what_done}" if what_done and not branch else ""
 
     actions = []
     if mr_url:
@@ -626,9 +629,10 @@ def build_result_card(task_id: str, summary: str, result: dict,
         },
         "body": {"elements": [
             {"tag": "div", "text": {"tag": "lark_md", "content": (
-                f"**任务：** {summary}\n"
-                f"**分支：** `{branch}`\n"
-                f"**改动：** {files}"
+                f"**任务：** {summary}"
+                f"{branch_line}"
+                f"\n**改动：** {files}"
+                f"{what_line}"
                 f"{mr_line}"
             )}},
             {"tag": "hr"},
@@ -897,6 +901,27 @@ def pipeline(task_id: str) -> None:
     task    = task_data["task"]
     summary = task["summary"]
 
+    # ── auto 模式：调 feishu-auto pipeline（Planner+Generator+Evaluator）────
+    if trigger_mode == "auto":
+        log(f"[pipeline] auto mode, calling feishu-auto BOT_AUTO_EXECUTE")
+        send_message(chat_id, f"🚀 auto 模式，启动 feishu-auto pipeline：{summary}")
+        try:
+            result = _run_feishu_auto(task_id, task_data=task_data)
+            _mark_analyzed(task_id)
+            if result.get("is_l3"):
+                analysis = {"summary": summary, "plan": []}
+                send_card(chat_id, build_l3_card(task_id, summary, analysis))
+            elif not result.get("success"):
+                # feishu-auto 已发了 failure card，这里只记录日志
+                log(f"[pipeline] auto: feishu-auto reported failure")
+            else:
+                t_type = "bug" if "fix" in result.get("branch", "") else "feature"
+                send_card(chat_id, build_result_card(task_id, summary, result, t_type))
+        except Exception as e:
+            log(f"[pipeline] auto execute failed: {e}")
+            send_card(chat_id, build_error_card(task_id, summary, str(e)))
+        return
+
     # ── spawn 模式：直接调 feishu-dev 全自动执行 ────────────────────────────
     if trigger_mode == "spawn":
         log(f"[pipeline] spawn mode, calling feishu-dev BOT_AUTO_EXECUTE")
@@ -1144,6 +1169,97 @@ def _run_feishu_dev(task_id: str, task_data: dict | None = None, analysis: dict 
             "files_changed": files_changed, "error": None, "is_l3": is_l3, "output": output}
 
 
+def _run_feishu_auto(task_id: str, task_data: dict | None = None) -> dict:
+    """
+    调用 feishu-auto skill 完成全自动 pipeline。
+    不做预分析，直接传任务内容，由 feishu-auto 的 Planner 自行定位文件和生成计划。
+    """
+    cfg        = bot_cfg()
+    global_cfg = read_config() or {}
+    frontend   = global_cfg.get("frontend_path", "")
+    backend    = global_cfg.get("backend_path", "") or cfg.get("project_path", "")
+
+    task_info = ""
+    if task_data:
+        t = task_data.get("task", {})
+        task_info = (
+            f"\n\n## 任务详情（已预加载，无需再调 API）\n\n"
+            f"任务标题：{t.get('summary', '')}\n"
+            f"任务描述：{t.get('description', '（无描述）')}\n"
+            f"任务链接：https://applink.feishu.cn/client/todo/detail?guid={task_id}\n"
+        )
+        comments = t.get("comments", [])
+        if comments:
+            task_info += "评论：\n" + "\n".join(f"- {c.get('content','')}" for c in comments)
+
+    prompt = f"BOT_AUTO_EXECUTE /feishu-auto {task_id}{task_info}"
+
+    cwd = str(PLUGIN_ROOT)
+    log(f"[feishu-auto] ── 开始执行 ──────────────────────────────")
+    log(f"[feishu-auto] task      = {task_id}")
+    log(f"[feishu-auto] cwd       = {cwd}")
+    log(f"[feishu-auto] frontend  = {frontend}")
+    log(f"[feishu-auto] backend   = {backend}")
+    log(f"[feishu-auto] model     = {EXECUTION_MODEL}")
+    log(f"[feishu-auto] prompt_len= {len(prompt)}")
+    log(f"[feishu-auto] ──────────────────────────────────────────")
+
+    output = run_claude(
+        prompt, cwd=cwd,
+        model=EXECUTION_MODEL, timeout=600,
+        dangerously_skip_permissions=True,
+    )
+
+    log(f"[feishu-auto] ── 执行完成 ──────────────────────────────")
+    log(f"[feishu-auto] output_len = {len(output)}")
+    log(f"[feishu-auto] output_head:\n{output[:500]}")
+    log(f"[feishu-auto] output_tail:\n{output[-300:]}")
+    log(f"[feishu-auto] ──────────────────────────────────────────")
+
+    branch        = ""
+    mr_url        = ""
+    files_changed = ""
+    commit_hash   = ""
+    what_done     = ""
+    file_lines: list[str] = []
+    in_files_section = False
+
+    for line in output.splitlines():
+        if "Branch:" in line and not line.strip().startswith("#"):
+            branch = line.split("Branch:")[-1].strip()
+        if "Commit:" in line:
+            commit_hash = line.split("Commit:")[-1].strip().split()[0]
+        if line.strip().startswith("做了什么:"):
+            what_done = line.split("做了什么:")[-1].strip()
+        urls = re.findall(r'https?://[^\s\)]+', line)
+        for u in urls:
+            if any(k in u for k in ("merge_requests", "pulls", "gitlab", "github")):
+                mr_url = u
+                break
+        stripped = line.strip()
+        if stripped.startswith("改了:"):
+            in_files_section = True
+            continue
+        if in_files_section:
+            if stripped.startswith("•"):
+                file_lines.append(stripped.lstrip("• ").strip())
+            elif stripped and not stripped.startswith("•"):
+                in_files_section = False
+
+    if file_lines:
+        files_changed = ", ".join(file_lines)
+    if commit_hash and files_changed:
+        files_changed = f"{files_changed}  ({commit_hash})"
+
+    is_l3   = ("L3 分析报告" in output or "此任务复杂度较高" in output)
+    is_fail = ("❌ Bot 处理失败" in output)
+
+    log(f"[feishu-auto] branch={branch!r} mr_url={mr_url!r} files={files_changed!r} is_l3={is_l3} is_fail={is_fail}")
+    return {"success": not is_fail, "branch": branch, "mr_url": mr_url,
+            "files_changed": files_changed, "what_done": what_done,
+            "error": None, "is_l3": is_l3, "output": output}
+
+
 # ── CLI 入口（方便本地测试）────────────────────────────────────────────────────
 
 def check_config() -> None:
@@ -1305,6 +1421,28 @@ def main() -> None:
             print(f"未找到 pending: {task_id}", file=sys.stderr)
             sys.exit(1)
         execute_from_pending(task_id)
+    elif cmd == "send_error_card":
+        # send_error_card <task_id> <task_summary> <error_msg>
+        if len(args) < 4:
+            print("用法: send_error_card <task_id> <task_summary> <error_msg>", file=sys.stderr)
+            sys.exit(1)
+        summary   = args[2]
+        error_msg = args[3]
+        chat_id   = bot_cfg().get("notify_chat_id", "")
+        card      = build_error_card(task_id, summary, error_msg)
+        send_card(chat_id, card)
+        print(json.dumps({"ok": True, "chat_id": chat_id}, ensure_ascii=False))
+    elif cmd == "create_mr":
+        # create_mr <task_id> <source_branch> <title> <description> [project_path]
+        if len(args) < 5:
+            print("用法: create_mr <task_id> <source_branch> <title> <description> [project_path]", file=sys.stderr)
+            sys.exit(1)
+        source_branch = args[2]
+        title         = args[3]
+        description   = args[4]
+        project_path  = args[5] if len(args) > 5 else bot_cfg().get("project_path", ".")
+        mr_url = create_mr(source_branch, title, description, project_path)
+        print(json.dumps({"ok": True, "mr_url": mr_url}, ensure_ascii=False))
     else:
         print(f"未知命令：{cmd}", file=sys.stderr)
         sys.exit(1)

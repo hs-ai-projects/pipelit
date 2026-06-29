@@ -37,7 +37,6 @@ if str(SCRIPT_DIR) not in sys.path:
 # 配置读取：用 feishu_api 的路径（~/.claude/pipelit/config.json），跟 save_config / save_user 对齐
 # 业务过滤：复用 feishu_bot_webhook 的事件判断逻辑
 from feishu_api import read_config, USER_CONFIG_DIR
-from feishu_bot_webhook import is_assigned_to_me
 
 
 def get_bot_cfg() -> dict:
@@ -96,15 +95,28 @@ def _process_task_event(event_type: str, body: dict) -> None:
 
         cfg            = get_bot_cfg()
         trigger_events = cfg.get("trigger_events", ["task_assigned", "task_created"])
-        my_user_id     = cfg.get("user_id") or (read_config() or {}).get("user_id", "")
+        my_user_id     = (read_config() or {}).get("user_id", "") or cfg.get("user_id", "")
+        log(body)
+        log(my_user_id)
 
         if "task_created" in event_type:
             if "task_created" not in trigger_events:
                 log("[event] task_created not in trigger_events, skip")
                 return
-            if my_user_id and not is_assigned_to_me(body, my_user_id):
-                log("[event] task_created but not assigned to me, skip")
-                return
+            if my_user_id:
+                try:
+                    from feishu_api import get_token, http as feishu_http
+                    token  = get_token()
+                    result = feishu_http("GET",
+                        f"/open-apis/task/v2/tasks/{task_id}?user_id_type=user_id",
+                        token=token)
+                    members   = result.get("data", {}).get("task", {}).get("members", [])
+                    assignees = {m.get("id") for m in members if m.get("role") == "assignee"}
+                    if my_user_id not in assignees:
+                        log("[event] task_created but not assigned to me, skip")
+                        return
+                except Exception as e:
+                    log(f"[event] failed to verify assignee: {e}, proceeding anyway")
 
         elif "task_user_access" in event_type:
             if "task_assigned" not in trigger_events:
@@ -138,9 +150,20 @@ def _process_task_event(event_type: str, body: dict) -> None:
             if "task_assigned" not in trigger_events:
                 log("[event] task_assigned not in trigger_events, skip")
                 return
-            if not is_assigned_to_me(body, my_user_id):
-                log("[event] not assigned to me, skip")
-                return
+            if my_user_id:
+                try:
+                    from feishu_api import get_token, http as feishu_http
+                    token  = get_token()
+                    result = feishu_http("GET",
+                        f"/open-apis/task/v2/tasks/{task_id}?user_id_type=user_id",
+                        token=token)
+                    members   = result.get("data", {}).get("task", {}).get("members", [])
+                    assignees = {m.get("id") for m in members if m.get("role") == "assignee"}
+                    if my_user_id not in assignees:
+                        log(f"[event] not assigned to me, skip")
+                        return
+                except Exception as e:
+                    log(f"[event] failed to verify assignee: {e}, proceeding anyway")
 
         import feishu_bot_analyzer as analyzer
         analyzer.pipeline(task_id)
@@ -268,7 +291,7 @@ def cmd_serve() -> None:
     handler = (
         lark.EventDispatcherHandler.builder("", "")
         .register_p2_task_task_updated_v1(on_task_updated)
-        .register_p2_customized_event("task.task.update_user_access_v2", on_task_user_access_updated)
+        .register_p1_customized_event("task.task.update_user_access_v2", on_task_user_access_updated)
         .register_p2_customized_event("task.task.created_v1", on_task_created)
         .register_p2_card_action_trigger(on_card_action)
         .build()
