@@ -36,6 +36,7 @@ git config --global user.name "pipelit-bot"
 # ── 5. 启动 bot ───────────────────────────────────────────────────
 export CLAUDE_PLUGIN_ROOT="$PIPELIT_DIR"
 export ANTHROPIC_API_KEY="${ANTHROPIC_API_KEY}"
+export ANTHROPIC_BASE_URL="${ANTHROPIC_BASE_URL}"
 
 echo "[entrypoint] starting feishu bot..."
 cd "$FRONTEND_DIR"
