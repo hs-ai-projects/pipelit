@@ -10,6 +10,9 @@ services:
       FRONTEND_REPO: ${FRONTEND_REPO}
       BACKEND_REPO: ${BACKEND_REPO}
       ANTHROPIC_AUTH_TOKEN: ${ANTHROPIC_API_KEY}
+      ANTHROPIC_DEFAULT_SONNET_MODEL: ${ANTHROPIC_DEFAULT_SONNET_MODEL}
+      BOT_ANALYSIS_MODEL: ${BOT_ANALYSIS_MODEL}
+      BOT_EXECUTION_MODEL: ${BOT_EXECUTION_MODEL}
 
     volumes:
       - /root/.claude/pipelit:/root/.claude/pipelit   # 挂载已有 config
