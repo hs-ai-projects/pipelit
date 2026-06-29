@@ -232,6 +232,7 @@ def run_claude(prompt: str, cwd: str, model: str = EXECUTION_MODEL,
         proc = subprocess.Popen(
             cmd, cwd=cwd, env=env,
             stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            stdin=subprocess.DEVNULL,
         )
     except FileNotFoundError:
         raise RuntimeError(
@@ -752,7 +753,7 @@ def _run_feishu_dev_analyze(task_id: str, user_feedback: str = "") -> dict:
     output = run_claude(
         prompt, cwd=cwd,
         model=ANALYSIS_MODEL, timeout=300,
-        dangerously_skip_permissions=True,
+        dangerously_skip_permissions=False,
     )
 
     log(f"[feishu-dev:analyze] output_len={len(output)}")
@@ -835,7 +836,7 @@ def execute(task_id: str, task_data: dict, analysis: dict) -> dict:
 7. 最后一行输出 DONE: <改动文件列表>，失败输出 FAILED: <原因>"""
 
     output = run_claude(prompt, cwd=project, model=EXECUTION_MODEL, timeout=600,
-                        dangerously_skip_permissions=True,
+                        dangerously_skip_permissions=False,
                         system_prompt=system_prompt)
     log(f"[execute] claude output tail: {output[-300:]}")
 
@@ -1115,7 +1116,7 @@ def _run_feishu_dev(task_id: str, task_data: dict | None = None, analysis: dict 
     output = run_claude(
         prompt, cwd=cwd,
         model=EXECUTION_MODEL, timeout=600,
-        dangerously_skip_permissions=True,
+        dangerously_skip_permissions=False,
     )
 
     log(f"[feishu-dev] ── 执行完成 ──────────────────────────────")
@@ -1207,7 +1208,7 @@ def _run_feishu_auto(task_id: str, task_data: dict | None = None) -> dict:
     output = run_claude(
         prompt, cwd=cwd,
         model=EXECUTION_MODEL, timeout=600,
-        dangerously_skip_permissions=True,
+        dangerously_skip_permissions=False,
     )
 
     log(f"[feishu-auto] ── 执行完成 ──────────────────────────────")
