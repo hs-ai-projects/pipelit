@@ -11,7 +11,7 @@ ENV CI=true \
     NO_UPDATE_NOTIFIER=1
 
 RUN mkdir -p /root/.claude && \
-    echo '{"hasCompletedOnboarding":true,"hasTrustDialogAccepted":true,"autoUpdates":false,"allowedTools":["Bash","Read","Write","Edit","Glob","Grep","LS","TodoWrite","TodoRead","WebFetch","WebSearch","Agent"]}' \
+    echo '{"hasCompletedOnboarding":true,"hasTrustDialogAccepted":true,"autoUpdates":false,"allowedTools":["Bash(*)","Read(*)","Write(*)","Edit(*)","Glob(*)","Grep(*)","LS(*)","TodoWrite(*)","TodoRead(*)","WebFetch(*)","WebSearch(*)"]}' \
     > /root/.claude/settings.json
 
 RUN pip install --no-cache-dir lark-oapi
