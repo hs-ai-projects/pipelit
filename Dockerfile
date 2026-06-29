@@ -5,7 +5,10 @@ RUN apt-get update && apt-get install -y git curl \
     && apt-get install -y nodejs \
     && apt-get clean && rm -rf /var/lib/apt/lists/*
 
-RUN npm install -g @anthropic-ai/claude-code
+RUN npm install -g @anthropic-ai/claude-code@1.0.56
+
+ENV CI=true \
+    NO_UPDATE_NOTIFIER=1
 
 RUN mkdir -p /root/.claude && \
     echo '{"hasCompletedOnboarding":true,"hasTrustDialogAccepted":true,"autoUpdates":false}' \
