@@ -8,7 +8,7 @@ RUN apt-get update && apt-get install -y git curl \
 RUN npm install -g @anthropic-ai/claude-code
 
 RUN mkdir -p /root/.claude && \
-    echo '{"hasCompletedOnboarding":true,"hasTrustDialogAccepted":true}' \
+    echo '{"hasCompletedOnboarding":true,"hasTrustDialogAccepted":true,"autoUpdates":false}' \
     > /root/.claude/settings.json
 
 RUN pip install --no-cache-dir lark-oapi
