@@ -5,6 +5,8 @@ PIPELIT_DIR="/app/pipelit"
 FRONTEND_DIR="/app/ads-web"
 BACKEND_DIR="/app/ads"
 
+git config --global --add safe.directory '*'
+
 # ── 1. Clone pipelit ──────────────────────────────────────────────
 echo "[entrypoint] syncing pipelit..."
 if [ -d "$PIPELIT_DIR/.git" ]; then
