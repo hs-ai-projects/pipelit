@@ -40,6 +40,7 @@ cat > "$PIPELIT_DIR/.claude/settings.json" << 'EOF'
 }
 EOF
 rm -f "$PIPELIT_DIR/.claude/settings.local.json"
+rm -f "$HOME/.claude/settings.local.json"
 
 # ── 5. 配置 git 身份 ──────────────────────────────────────────────
 git config --global user.email "pipelit-bot@bot.local"
