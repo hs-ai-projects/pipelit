@@ -29,7 +29,18 @@ else
   git clone "http://oauth2:${GITLAB_TOKEN}@${BACKEND_REPO#http://}" "$BACKEND_DIR"
 fi
 
-# ── 4. 配置 git 身份 ──────────────────────────────────────────────
+# ── 4. 覆盖项目级 claude settings（本地 Windows 路径在容器里无效）──────
+cat > "$PIPELIT_DIR/.claude/settings.json" << 'EOF'
+{
+  "permissions": {
+    "allow": ["Bash(*)", "Read(*)", "Write(*)", "Edit(*)", "Glob(*)", "Grep(*)", "LS(*)"],
+    "additionalDirectories": ["/app", "/tmp", "/root"]
+  }
+}
+EOF
+rm -f "$PIPELIT_DIR/.claude/settings.local.json"
+
+# ── 5. 配置 git 身份 ──────────────────────────────────────────────
 git config --global user.email "pipelit-bot@bot.local"
 git config --global user.name "pipelit-bot"
 
@@ -37,6 +48,7 @@ git config --global user.name "pipelit-bot"
 export CLAUDE_PLUGIN_ROOT="$PIPELIT_DIR"
 export ANTHROPIC_API_KEY="${ANTHROPIC_API_KEY}"
 export ANTHROPIC_BASE_URL="${ANTHROPIC_BASE_URL}"
+export ANTHROPIC_AUTH_TOKEN="${ANTHROPIC_AUTH_TOKEN}"
 export ANTHROPIC_DEFAULT_SONNET_MODEL="${ANTHROPIC_DEFAULT_SONNET_MODEL}"
 export BOT_ANALYSIS_MODEL="${BOT_ANALYSIS_MODEL}"
 export BOT_EXECUTION_MODEL="${BOT_EXECUTION_MODEL}"
