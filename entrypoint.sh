@@ -30,6 +30,7 @@ else
 fi
 
 # ── 4. 覆盖项目级 claude settings（本地 Windows 路径在容器里无效）──────
+mkdir -p "$PIPELIT_DIR/.claude"
 cat > "$PIPELIT_DIR/.claude/settings.json" << 'EOF'
 {
   "permissions": {
