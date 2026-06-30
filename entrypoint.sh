@@ -59,4 +59,4 @@ export BOT_SKIP_PERMS=1
 
 echo "[entrypoint] starting feishu bot..."
 cd "$FRONTEND_DIR"
-exec python3 "$PIPELIT_DIR/scripts/feishu_bot_longpoll.py" serve
+exec sudo -u bot python3 "$PIPELIT_DIR/scripts/feishu_bot_longpoll.py" serve

@@ -16,6 +16,14 @@ RUN mkdir -p /root/.claude && \
 
 RUN pip install --no-cache-dir lark-oapi
 
+RUN useradd -m -u 1000 bot && \
+    mkdir -p /home/bot/.claude && \
+    echo '{"hasCompletedOnboarding":true,"hasTrustDialogAccepted":true,"autoUpdates":false,"permissions":{"allow":["Bash(*)","Read(*)","Write(*)","Edit(*)","Glob(*)","Grep(*)","LS(*)"],"additionalDirectories":["/app","/tmp","/home/bot"]}}' \
+    > /home/bot/.claude/settings.json && \
+    chown -R bot:bot /home/bot && \
+    apt-get update && apt-get install -y sudo && \
+    echo 'bot ALL=(ALL) NOPASSWD: ALL' >> /etc/sudoers.d/bot
+
 COPY entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh
 
