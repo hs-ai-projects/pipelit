@@ -192,9 +192,8 @@ def on_task_updated(data) -> None:
 def on_task_user_access_updated(data) -> None:
     """task.task.update_user_access_v2 回调（用户维度，覆盖客户端创建的任务）。
 
-    这才是"指派给我的任务"场景需要的事件。SDK 1.6.x 没有内置 handler，
-    走 register_p1_customized_event 自定义订阅接收。
     用户维度事件本身已过滤，无需再做 is_assigned_to_me 检查，用独立 event_type 标记。
+    SDK 1.6.9+ 有内置 register_p2_task_task_update_user_access_v2。
     """
     body = _to_dict(data)
     threading.Thread(
@@ -291,7 +290,7 @@ def cmd_serve() -> None:
     handler = (
         lark.EventDispatcherHandler.builder("", "")
         .register_p2_task_task_updated_v1(on_task_updated)
-        .register_p1_customized_event("task.task.update_user_access_v2", on_task_user_access_updated)
+        .register_p2_task_task_update_user_access_v2(on_task_user_access_updated)
         .register_p2_customized_event("task.task.created_v1", on_task_created)
         .register_p2_card_action_trigger(on_card_action)
         .build()
@@ -306,6 +305,16 @@ def cmd_serve() -> None:
     }
     log(f"[start] {json.dumps(info, ensure_ascii=False)}")
     print(json.dumps(info, ensure_ascii=False, indent=2))
+
+    # 主动订阅 task.task.update_user_access_v2，SDK 不会自动调这个接口
+    # ponytail: CLI 的 PreConsume hook 会发这个请求，SDK 没有，手动补上
+    try:
+        from feishu_api import get_token, http as feishu_http
+        token = get_token()
+        feishu_http("POST", "/open-apis/task/v2/task_v2/task_subscription?user_id_type=open_id", token=token)
+        log("[start] task subscription registered")
+    except Exception as e:
+        log(f"[warn] task subscription failed: {e}")
 
     client = lark.ws.Client(
         app_id,
