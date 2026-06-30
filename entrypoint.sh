@@ -58,13 +58,5 @@ export BOT_EXECUTION_MODEL="${BOT_EXECUTION_MODEL}"
 export BOT_SKIP_PERMS=1
 
 echo "[entrypoint] starting feishu bot..."
-
-# ── 6. 同步飞书配置到 bot 用户 home（bot 用户 Path.home() 指向 /home/bot）──
-mkdir -p /home/bot/.claude/pipelit
-if [ -f /root/.claude/pipelit/config.json ]; then
-  cp /root/.claude/pipelit/config.json /home/bot/.claude/pipelit/config.json 2>/dev/null || true
-  chown bot:bot /home/bot/.claude/pipelit/config.json 2>/dev/null || true
-fi
-
 cd "$FRONTEND_DIR"
 exec sudo -u bot python3 "$PIPELIT_DIR/scripts/feishu_bot_longpoll.py" serve
