@@ -150,6 +150,12 @@ def _process_task_event(event_type: str, body: dict) -> None:
             if "task_assigned" not in trigger_events:
                 log("[event] task_assigned not in trigger_events, skip")
                 return
+            # obj_type=3: 成员变更（assignee/follower），task_user_access 已覆盖
+            # obj_type=5: 任务完成状态变更，bot complete_task 后触发，不应再触发
+            obj_type = event.get("obj_type")
+            if obj_type in (3, 5):
+                log(f"[event] task_updated obj_type={obj_type}, skip")
+                return
             if my_user_id:
                 try:
                     from feishu_api import get_token, http as feishu_http

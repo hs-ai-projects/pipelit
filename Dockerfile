@@ -8,7 +8,8 @@ RUN apt-get update && apt-get install -y git curl \
 RUN npm install -g @anthropic-ai/claude-code@1.0.56
 
 ENV CI=true \
-    NO_UPDATE_NOTIFIER=1
+    NO_UPDATE_NOTIFIER=1 \
+    IS_SANDBOX=1
 
 RUN mkdir -p /root/.claude && \
     echo '{"hasCompletedOnboarding":true,"hasTrustDialogAccepted":true,"autoUpdates":false,"permissions":{"allow":["Bash(*)","Read(*)","Write(*)","Edit(*)","Glob(*)","Grep(*)","LS(*)"],"additionalDirectories":["/app","/tmp","/root"]}}' \

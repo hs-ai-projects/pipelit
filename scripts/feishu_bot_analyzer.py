@@ -243,6 +243,8 @@ def run_claude(prompt: str, cwd: str, model: str = EXECUTION_MODEL,
     result_text: list[str] = []
     stderr_lines: list[str] = []
 
+    assistant_texts: list[str] = []
+
     def _read_stream(pipe):
         """解析 stream-json 事件，实时打出工具调用，收集最终文本。"""
         for raw_bytes in iter(pipe.readline, b""):
@@ -265,6 +267,7 @@ def run_claude(prompt: str, cwd: str, model: str = EXECUTION_MODEL,
                         text = block.get("text", "").strip()
                         if text:
                             log(f"[claude:text] {text[:300]}")
+                            assistant_texts.append(text)
                     elif btype == "tool_use":
                         name  = block.get("name", "")
                         inp   = block.get("input", {})
@@ -313,7 +316,8 @@ def run_claude(prompt: str, cwd: str, model: str = EXECUTION_MODEL,
         stderr_text = "".join(stderr_lines)[:300]
         raise RuntimeError(f"claude 退出码 {proc.returncode}：{stderr_text}")
 
-    return "".join(result_text)
+    # result 事件的 result 字段是最终输出；为空时用所有 assistant text 兜底
+    return "".join(result_text) or "\n".join(assistant_texts)
 
 
 def parse_json_from_output(text: str) -> dict:
@@ -607,11 +611,16 @@ def build_result_card(task_id: str, summary: str, result: dict,
     branch     = result.get("branch", "")
     files      = result.get("files_changed", "") or "无"
     what_done  = result.get("what_done", "")
+    analysis   = result.get("analysis", {})
     emoji      = "🐛" if task_type == "bug" else "✨"
     label      = "Bug 已自动修复" if task_type == "bug" else "需求已自动实现"
     mr_line    = f"\n**MR：** [{mr_url}]({mr_url})" if mr_url else ""
     branch_line = f"\n**分支：** `{branch}`" if branch else ""
     what_line   = f"\n**内容：** {what_done}" if what_done and not branch else ""
+    analysis_summary = analysis.get("summary", "")
+    plan_lines = analysis.get("plan", [])
+    analysis_line = f"\n\n**分析：** {analysis_summary}" if analysis_summary else ""
+    plan_line = ("\n**改动计划：**\n" + "\n".join(f"- {p}" for p in plan_lines)) if plan_lines else ""
 
     actions = []
     if mr_url:
@@ -631,6 +640,8 @@ def build_result_card(task_id: str, summary: str, result: dict,
         "body": {"elements": [
             {"tag": "div", "text": {"tag": "lark_md", "content": (
                 f"**任务：** {summary}"
+                f"{analysis_line}"
+                f"{plan_line}"
                 f"{branch_line}"
                 f"\n**改动：** {files}"
                 f"{what_line}"
@@ -877,8 +888,8 @@ def pipeline(task_id: str) -> None:
     notify 模式（默认）→ feishu-dev BOT_ANALYZE_ONLY → 发确认卡片 → 等用户点击
     spawn  模式        → feishu-dev BOT_AUTO_EXECUTE  → 全自动执行，不等确认
     """
-    # if _is_debounced(task_id):
-    #     return
+    if _is_debounced(task_id):
+        return
 
     cfg          = bot_cfg()
     chat_id      = cfg["notify_chat_id"]
@@ -1058,8 +1069,8 @@ def _run_feishu_dev(task_id: str, task_data: dict | None = None, analysis: dict 
     """
     cfg          = bot_cfg()
     global_cfg   = read_config() or {}
-    frontend     = global_cfg.get("frontend_path", "")
-    backend      = global_cfg.get("backend_path", "") or cfg.get("project_path", "")
+    frontend     = os.environ.get("BOT_FRONTEND_PATH", "") or global_cfg.get("frontend_path", "")
+    backend      = os.environ.get("BOT_BACKEND_PATH", "") or global_cfg.get("backend_path", "") or cfg.get("project_path", "")
 
     # 从 plan 判断前端还是后端
     plan_str    = " ".join(analysis.get("plan", [])) if analysis else ""
@@ -1086,6 +1097,13 @@ def _run_feishu_dev(task_id: str, task_data: dict | None = None, analysis: dict 
         comments = t.get("comments", [])
         if comments:
             task_info += "评论：\n" + "\n".join(f"- {c.get('content','')}" for c in comments)
+    # 注入路径配置，SKILL 看到后跳过 detect_project_paths
+    if frontend or backend:
+        task_info += (
+            f"\n\n## 项目路径（已配置，跳过 detect_project_paths）\n"
+            f"前端：{frontend or '未配置'}\n"
+            f"后端：{backend or '未配置'}"
+        )
 
     # 分析结果
     plan_text = ""
@@ -1165,9 +1183,19 @@ def _run_feishu_dev(task_id: str, task_data: dict | None = None, analysis: dict 
     # 检测 feishu-dev 是否因 L3 停止（只输出报告，没有执行代码改动）
     is_l3 = ("L3 分析报告" in output or "此任务复杂度较高" in output)
 
+    # 解析 [BOT_RESULT] 获取分析内容
+    analysis_result: dict = {}
+    m = re.search(r'\[BOT_RESULT\]\s*(\{[^\n]+\})', output)
+    if m:
+        try:
+            analysis_result = json.loads(m.group(1))
+        except json.JSONDecodeError:
+            pass
+
     log(f"[feishu-dev] branch={branch!r} mr_url={mr_url!r} files={files_changed!r} is_l3={is_l3}")
     return {"success": True, "branch": branch, "mr_url": mr_url,
-            "files_changed": files_changed, "error": None, "is_l3": is_l3, "output": output}
+            "files_changed": files_changed, "error": None, "is_l3": is_l3,
+            "output": output, "analysis": analysis_result}
 
 
 def _run_feishu_auto(task_id: str, task_data: dict | None = None) -> dict:

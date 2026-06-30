@@ -49,6 +49,8 @@ git config --global user.name "pipelit-bot"
 
 # ── 5. 启动 bot ───────────────────────────────────────────────────
 export CLAUDE_PLUGIN_ROOT="$PIPELIT_DIR"
+export BOT_FRONTEND_PATH="$FRONTEND_DIR"
+export BOT_BACKEND_PATH="$BACKEND_DIR"
 export ANTHROPIC_API_KEY="${ANTHROPIC_API_KEY}"
 export ANTHROPIC_BASE_URL="${ANTHROPIC_BASE_URL}"
 export ANTHROPIC_AUTH_TOKEN="${ANTHROPIC_AUTH_TOKEN}"
